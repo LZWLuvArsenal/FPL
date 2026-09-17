@@ -1,0 +1,51 @@
+"""Helpers for turning raw FPL API payloads into pandas DataFrames."""
+from __future__ import annotations
+
+import pandas as pd
+
+
+def players_df(bootstrap: dict) -> pd.DataFrame:
+    df = pd.DataFrame(bootstrap["elements"])
+    teams = {t["id"]: t["name"] for t in bootstrap["teams"]}
+    team_shorts = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+    positions = {p["id"]: p["singular_name_short"] for p in bootstrap["element_types"]}
+    df["team_name"] = df["team"].map(teams)
+    df["team_short"] = df["team"].map(team_shorts)
+    df["position"] = df["element_type"].map(positions)
+    df["price"] = df["now_cost"] / 10
+    df["full_name"] = df["first_name"] + " " + df["second_name"]
+    numeric_cols = (
+        "form",
+        "points_per_game",
+        "selected_by_percent",
+        "ict_index",
+        "expected_goals",
+        "expected_assists",
+        "expected_goal_involvements",
+        "expected_goals_conceded",
+    )
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def teams_df(bootstrap: dict) -> pd.DataFrame:
+    return pd.DataFrame(bootstrap["teams"])
+
+
+def current_event(bootstrap: dict) -> int:
+    events = bootstrap["events"]
+    for e in events:
+        if e["is_current"]:
+            return e["id"]
+    for e in events:
+        if e["is_next"]:
+            return e["id"]
+    return events[-1]["id"]
+
+
+def next_event(bootstrap: dict) -> int | None:
+    for e in bootstrap["events"]:
+        if e["is_next"]:
+            return e["id"]
+    return None
