@@ -10,7 +10,7 @@ import streamlit as st
 from src.config import is_owner, render_sidebar_settings
 from src.fpl_api import get_bootstrap_static, get_entry, get_event_live, get_fixtures
 from src.tracker import add_snapshot
-from src.utils import next_event, players_df, teams_df
+from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, next_event, players_df, teams_df
 
 st.set_page_config(page_title="Recommendations - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
@@ -98,7 +98,7 @@ if finished_events:
         "Recent form window (gameweeks)",
         1,
         len(finished_events),
-        len(finished_events),
+        min(5, len(finished_events)),
         help="How many of the most recently completed gameweeks feed each team's own/opponent xG/xGC "
         "and each player's bonus/cards/defensive-contribution averages below. Turn it down to weight "
         "recent form over a flat season-to-date average.",
@@ -345,15 +345,6 @@ st.caption(
     "excluded everywhere below as rotation risks or habitual late substitutes."
 )
 
-FDR_COLORS = {
-    1: "rgba(0, 166, 90, 0.5)",
-    2: "rgba(0, 166, 90, 0.25)",
-    3: "rgba(255, 193, 7, 0.2)",
-    4: "rgba(220, 53, 69, 0.25)",
-    5: "rgba(220, 53, 69, 0.5)",
-}
-
-
 def _doubtful_badge(row):
     if row["status"] != "d":
         return ""
@@ -369,10 +360,10 @@ def _doubtful_badge(row):
 def _fixture_chips_html(team_id):
     chips = []
     for opp, diff, is_home in team_fixtures.get(team_id, []):
-        color = FDR_COLORS.get(round(diff), "rgba(128,128,128,0.15)")
+        style = FDR_STYLES.get(round(diff), FDR_STYLE_UNKNOWN)
         code = html.escape(team_short.get(opp, "?")) + (" (H)" if is_home else " (A)")
         chips.append(
-            f'<span style="background:{color}; border-radius:4px; padding:2px 6px; font-size:0.72rem; '
+            f'<span style="{style}; border-radius:4px; padding:2px 6px; font-size:0.72rem; font-weight:600; '
             f'white-space:nowrap; display:inline-block; margin:1px;">{code}</span>'
         )
     return "".join(chips)

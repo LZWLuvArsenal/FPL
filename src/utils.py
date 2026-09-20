@@ -3,6 +3,17 @@ from __future__ import annotations
 
 import pandas as pd
 
+# Official FPL fixture-difficulty palette as inline CSS (solid backgrounds with explicit text colours, so
+# it stays legible on the dark theme). Key = difficulty 1 (easiest) to 5 (hardest).
+FDR_STYLES = {
+    1: "background-color: #257d5a; color: #ffffff",
+    2: "background-color: #00ff86; color: #14001c",
+    3: "background-color: #ebebe4; color: #14001c",
+    4: "background-color: #ff005a; color: #ffffff",
+    5: "background-color: #861d46; color: #ffffff",
+}
+FDR_STYLE_UNKNOWN = "background-color: #4a2266; color: #ffffff"
+
 
 def players_df(bootstrap: dict) -> pd.DataFrame:
     df = pd.DataFrame(bootstrap["elements"])

@@ -1,49 +1,24 @@
-from datetime import datetime, timezone
-
+"""Entry point: registers the pages explicitly so the home page can be labelled "Home Page" in the sidebar
+(with automatic pages/ discovery it would be named after this file). url_path keeps the old page URLs."""
 import streamlit as st
 
-from src.config import render_sidebar_settings
-from src.fpl_api import get_bootstrap_static
-from src.utils import current_event, next_event
+from src.config import is_owner
 
-st.set_page_config(page_title="FPL Dashboard", page_icon="⚽", layout="wide")
+PAGES = [
+    st.Page("home.py", title="Home Page", default=True),
+    st.Page("pages/1_My_Team.py", title="My Team", url_path="My_Team"),
+    st.Page("pages/3_Player_Explorer.py", title="Player Explorer", url_path="Player_Explorer"),
+    st.Page("pages/4_Fixture_Planner.py", title="Fixture Planner", url_path="Fixture_Planner"),
+    st.Page("pages/5_Team_Stats.py", title="Team Stats", url_path="Team_Stats"),
+    st.Page("pages/6_Gameweek_Insights.py", title="Gameweek Insights", url_path="Gameweek_Insights"),
+    st.Page("pages/7_Price_Changes.py", title="Price Changes", url_path="Price_Changes"),
+    st.Page("pages/8_League_Explorer.py", title="League Explorer", url_path="League_Explorer"),
+    st.Page("pages/9_Recommendations.py", title="Recommendations", url_path="Recommendations"),
+    st.Page("pages/10_Head_to_Head.py", title="Head to Head", url_path="Head_to_Head"),
+    st.Page("pages/11_Set_Piece_Notes.py", title="Set Piece Takers", url_path="Set_Piece_Notes"),
+]
+if is_owner():  # the squad tracker is private to the owner, so visitors don't even see it in the menu
+    PAGES.append(st.Page("pages/12_Squad_Tracker.py", title="Squad Tracker", url_path="Squad_Tracker"))
+PAGES.append(st.Page("pages/13_How_It_Works.py", title="How It Works", url_path="How_It_Works"))
 
-render_sidebar_settings()
-
-st.title("⚽ FPL Dashboard")
-
-bootstrap = get_bootstrap_static()
-event_id = current_event(bootstrap)
-event = next(e for e in bootstrap["events"] if e["id"] == event_id)
-status = "Final" if event["finished"] and event["data_checked"] else "In Progress"
-
-col1, col2, col3 = st.columns(3)
-col1.metric(f"{event['name']} ({status})", event.get("highest_score", "-"), help="Highest score this gameweek")
-col2.metric("Average Score", event.get("average_entry_score", "-"))
-
-next_id = next_event(bootstrap)
-if next_id:
-    next_gw = next(e for e in bootstrap["events"] if e["id"] == next_id)
-    deadline = datetime.fromisoformat(next_gw["deadline_time"].replace("Z", "+00:00"))
-    remaining = deadline - datetime.now(timezone.utc)
-    days, hours = remaining.days, remaining.seconds // 3600
-    col3.metric(f"{next_gw['name']} Deadline", deadline.strftime("%a %d %b, %H:%M UTC"), f"{days}d {hours}h left")
-else:
-    col3.metric("Next Deadline", "Season complete")
-
-st.markdown(
-    """
-Use the sidebar to set your **Team ID** and **Mini-League ID**, then explore the pages:
-
-- **My Team** — your squad, points history, rank progression, chips used
-- **League Standings** — your mini-league table
-- **Player Explorer** — filter and sort every PL player
-- **Fixture Planner** — upcoming fixture difficulty by team
-- **Team Stats** — xG/xGC by team, finishing and defensive over/under-performance
-- **Gameweek Insights** — chip usage, transfer volume, most captained/selected by GW
-- **Price Changes** — today's risers/fallers and season-to-date price movement
-- **League Explorer** — any mini-league member's squad, captain, and transfers
-- **Recommendations** — attacking/clean-sheet picks and differentials for the next gameweek
-- **How It Works** — full explanations of every projected goal, point and probability
-"""
-)
+st.navigation(PAGES).run()

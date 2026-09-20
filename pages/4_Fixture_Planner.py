@@ -4,7 +4,7 @@ import streamlit as st
 from src.config import render_sidebar_settings
 from src.fpl_api import get_bootstrap_static, get_fixtures
 from src.team_model import project_fixture, team_rates, venue_factors
-from src.utils import current_event, next_event, teams_df
+from src.utils import FDR_STYLES, current_event, next_event, teams_df
 
 st.set_page_config(page_title="Fixture Planner - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
@@ -16,7 +16,7 @@ teams = teams_df(bootstrap)
 team_names = dict(zip(teams["id"], teams["short_name"]))
 
 start_event = next_event(bootstrap) or current_event(bootstrap)
-num_gw = st.slider("Number of gameweeks", min_value=3, max_value=10, value=6)
+num_gw = st.slider("Number of gameweeks", min_value=3, max_value=10, value=5)
 gw_range = range(start_event, start_event + num_gw)
 gw_cols = [f"GW{gw}" for gw in gw_range]
 
@@ -27,7 +27,7 @@ if finished_events:
         "Recent form window (gameweeks)",
         1,
         len(finished_events),
-        len(finished_events),
+        min(5, len(finished_events)),
         help="How many of the most recently completed gameweeks feed each team's xG and xGC per match "
         "in the projection tabs. Turn it down to weight recent form over a flat season-to-date average.",
     )
@@ -51,23 +51,39 @@ for f in fixtures:
             game.update(xg=proj["xg"], xga=proj["xga"], cs=proj["cs_prob"])
         team_games[team_id][f["event"]].append(game)
 
-FDR_COLORS = {
-    1: "background-color: rgba(0, 166, 90, 0.5)",
-    2: "background-color: rgba(0, 166, 90, 0.25)",
-    3: "background-color: rgba(255, 193, 7, 0.2)",
-    4: "background-color: rgba(220, 53, 69, 0.25)",
-    5: "background-color: rgba(220, 53, 69, 0.5)",
-}
+FDR_COLORS = FDR_STYLES
 
 
-def fdr_color(value, _lo, _hi):
+def fdr_color(value, _all_values):
     return FDR_COLORS.get(round(value), "")
 
 
-def green_scale(value, lo, hi):
-    """Shades a cell green in proportion to where it sits between the table's lowest and highest value."""
-    share = 0.5 if hi == lo else (value - lo) / (hi - lo)
-    return f"background-color: rgba(0, 166, 90, {0.06 + 0.5 * share:.2f})"
+# Best -> worst. A plain green-to-red gradient (brightest green = best), unlike the official difficulty
+# palette above whose "1" is a darker green than its "2".
+QUINTILE_COLORS = {
+    1: "background-color: #00d97e; color: #14001c",
+    2: "background-color: #a6ecc6; color: #14001c",
+    3: "background-color: #ebebe4; color: #14001c",
+    4: "background-color: #ff9db9; color: #14001c",
+    5: "background-color: #ff005a; color: #ffffff",
+}
+
+
+def quintile_color(value, all_values):
+    """Colours a cell by which fifth of the table's values it falls in (best fifth = band 1). Uses the
+    same palette as the difficulty tab so 'green = good, red = bad' reads the same everywhere; ranking
+    by percentile (not by raw range) keeps one double-gameweek outlier from washing out the rest."""
+    share_at_or_below = (all_values <= value).mean()
+    band = 1 if share_at_or_below > 0.8 else 2 if share_at_or_below > 0.6 else 3 if share_at_or_below > 0.4 else 4 if share_at_or_below > 0.2 else 5
+    return QUINTILE_COLORS[band]
+
+
+def _legend(palette: dict, labels: list[str]) -> None:
+    chips = "".join(
+        f'<span style="{palette[band]}; padding:3px 14px; font-size:0.78rem; font-weight:600;">{text}</span>'
+        for band, text in enumerate(labels, start=1)
+    )
+    st.markdown(f'<div style="display:flex; gap:2px; margin:6px 0 2px; flex-wrap:wrap;">{chips}</div>', unsafe_allow_html=True)
 
 
 def _venue(g):
@@ -105,7 +121,7 @@ def render_grid(key, cell_text, cell_value, color_fn, summaries, default_sort, n
     order = (values[sort_col] if sort_col in gw_cols else df[sort_col]).sort_values(ascending=ascending, na_position="last").index
     df, values = df.loc[order], values.loc[order]
 
-    lo, hi = values.min().min(), values.max().max()
+    all_values = values.stack()
 
     def color(data):
         styles = pd.DataFrame("", index=data.index, columns=data.columns)
@@ -113,7 +129,7 @@ def render_grid(key, cell_text, cell_value, color_fn, summaries, default_sort, n
             for idx in data.index:
                 v = values.loc[idx, col]
                 if not pd.isna(v):
-                    styles.loc[idx, col] = color_fn(v, lo, hi)
+                    styles.loc[idx, col] = color_fn(v, all_values)
         return styles
 
     styled = (
@@ -147,6 +163,7 @@ with tabs[0]:
         default_sort="Avg Difficulty",
         number_formats={"Avg Difficulty": "{:.2f}"},
     )
+    _legend(FDR_COLORS, ["1 Easiest", "2", "3", "4", "5 Hardest"])
     st.caption(
         "FPL's own fixture difficulty rating (1 easiest – 5 hardest). Green = easier fixtures, red = harder. "
         "Averaged across double gameweeks. Use the dropdown to sort — clicking a column header here won't "
@@ -159,22 +176,23 @@ if has_projections:
             "xg",
             cell_text=lambda g: f"{_venue(g)}\nxG {g['xg']:.1f}",
             cell_value=lambda games: sum(g["xg"] for g in games),
-            color_fn=green_scale,
+            color_fn=quintile_color,
             summaries={"Proj xG": (lambda t: sum(g["xg"] for g in all_games(t)), False)},
             default_sort="Proj xG",
             number_formats={"Proj xG": "{:.1f}"},
         )
+        _legend(QUINTILE_COLORS, ["Top fifth", "2nd", "Middle", "4th", "Bottom fifth"])
         st.caption(
             "**xG** is the goals a team is projected to score in that game. **Proj xG** is the total across "
-            "the gameweeks shown (doubles count twice). Cell shading follows the gameweek's xG — darker "
-            "green = more goals expected."
+            "the gameweeks shown (doubles count twice). Each cell is coloured by how its xG ranks among every "
+            "cell in the table: the top fifth is green, the bottom fifth red."
         )
     with tabs[2]:
         render_grid(
             "cs",
             cell_text=lambda g: f"{_venue(g)}\nCS {g['cs']:.0%}",
             cell_value=lambda games: _mean([g["cs"] for g in games]),
-            color_fn=green_scale,
+            color_fn=quintile_color,
             summaries={
                 "Avg CS %": (lambda t: (_mean([g["cs"] for g in all_games(t)]) or 0) * 100, False),
                 "Exp. clean sheets": (lambda t: sum(g["cs"] for g in all_games(t)), False),
@@ -182,10 +200,12 @@ if has_projections:
             default_sort="Avg CS %",
             number_formats={"Avg CS %": "{:.0f}%", "Exp. clean sheets": "{:.1f}"},
         )
+        _legend(QUINTILE_COLORS, ["Top fifth", "2nd", "Middle", "4th", "Bottom fifth"])
         st.caption(
             "**CS** is the chance a team keeps a clean sheet in that game. **Avg CS %** is the average per "
             "game and **Exp. clean sheets** the sum across the gameweeks shown (doubles count both games). "
-            "Shading follows the gameweek's clean sheet chance — darker green = more likely."
+            "Each cell is coloured by how its chance ranks among every cell in the table: the top fifth is "
+            "green, the bottom fifth red."
         )
     st.caption(
         "**How the projections work:** built like the Recommendations page's points model — each side's own "

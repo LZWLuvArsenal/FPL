@@ -14,7 +14,8 @@ from src.fpl_api import (
     get_fixtures,
     get_league_standings,
 )
-from src.utils import current_event, next_event, players_df
+from src.pitch import render_pitch, upcoming_fixture_labels
+from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df
 
 OVERALL_LEAGUE_ID = 314
 
@@ -144,30 +145,43 @@ try:
         else r["web_name"],
         axis=1,
     )
-    squad_header = "".join(
-        f'<th style="text-align:left; padding:6px 8px; font-size:0.78rem; opacity:0.7;">{label}</th>'
-        for label in ["Player", "Team", "Pos", "Price", "GW Pts", "Total Pts"]
-    )
-    squad_rows_html = []
-    for _, r in picks_df.sort_values("slot").iterrows():
-        benched = r["slot"] > 11
-        row_style = "background:rgba(128,128,128,0.16);" if benched else ""
-        squad_rows_html.append(
-            f'<tr style="border-top:1px solid rgba(128,128,128,0.15); {row_style}">'
-            f'<td style="padding:6px 8px; font-weight:600; white-space:nowrap;">{html.escape(r["player"])}</td>'
-            f'<td style="padding:6px 8px;">{html.escape(r["team_name"])}</td>'
-            f'<td style="padding:6px 8px;">{r["position"]}</td>'
-            f'<td style="padding:6px 8px; white-space:nowrap;">£{r["price"]:.1f}</td>'
-            f'<td style="padding:6px 8px;">{r["event_points"]}</td>'
-            f'<td style="padding:6px 8px;">{r["total_points"]}</td>'
-            "</tr>"
+    squad_view = st.radio("Squad view", ["Pitch view", "List view"], horizontal=True, label_visibility="collapsed")
+    if squad_view == "Pitch view":
+        team_codes = {t["id"]: t["code"] for t in bootstrap["teams"]}
+        team_shorts = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+        st.markdown(
+            render_pitch(picks_df, team_codes, upcoming_fixture_labels(get_fixtures(), event_id, team_shorts)),
+            unsafe_allow_html=True,
         )
-    st.markdown(
-        '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
-        f"<thead><tr>{squad_header}</tr></thead><tbody>{''.join(squad_rows_html)}</tbody></table></div>",
-        unsafe_allow_html=True,
-    )
-    st.caption("Greyed-out rows are on the bench.")
+        st.caption(
+            "Shows each player's points this gameweek, or their opponent if the match hasn't kicked off yet. "
+            "C = captain, V = vice-captain. Pink = 1 point or fewer, green = 8 or more."
+        )
+    else:
+        squad_header = "".join(
+            f'<th style="text-align:left; padding:6px 8px; font-size:0.78rem; opacity:0.7;">{label}</th>'
+            for label in ["Player", "Team", "Pos", "Price", "GW Pts", "Total Pts"]
+        )
+        squad_rows_html = []
+        for _, r in picks_df.sort_values("slot").iterrows():
+            benched = r["slot"] > 11
+            row_style = "background:rgba(128,128,128,0.16);" if benched else ""
+            squad_rows_html.append(
+                f'<tr style="border-top:1px solid rgba(128,128,128,0.15); {row_style}">'
+                f'<td style="padding:6px 8px; font-weight:600; white-space:nowrap;">{html.escape(r["player"])}</td>'
+                f'<td style="padding:6px 8px;">{html.escape(r["team_name"])}</td>'
+                f'<td style="padding:6px 8px;">{r["position"]}</td>'
+                f'<td style="padding:6px 8px; white-space:nowrap;">£{r["price"]:.1f}</td>'
+                f'<td style="padding:6px 8px;">{r["event_points"]}</td>'
+                f'<td style="padding:6px 8px;">{r["total_points"]}</td>'
+                "</tr>"
+            )
+        st.markdown(
+            '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+            f"<thead><tr>{squad_header}</tr></thead><tbody>{''.join(squad_rows_html)}</tbody></table></div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Greyed-out rows are on the bench.")
 except Exception:
     st.warning(f"Picks for GW{event_id} aren't available yet.")
 
@@ -237,14 +251,6 @@ else:
     fixtures = get_fixtures()
     team_short_map = players.set_index("team")["team_short"].to_dict()
 
-    FDR_COLORS = {
-        1: "rgba(0, 166, 90, 0.5)",
-        2: "rgba(0, 166, 90, 0.25)",
-        3: "rgba(255, 193, 7, 0.2)",
-        4: "rgba(220, 53, 69, 0.25)",
-        5: "rgba(220, 53, 69, 0.5)",
-    }
-
     def blanked_last_3(element_id, position):
         played = [h for h in get_element_summary(int(element_id))["history"] if h["minutes"] > 0]
         if len(played) < 3:
@@ -270,10 +276,10 @@ else:
             is_home = f["team_h"] == team_id
             opp = f["team_a"] if is_home else f["team_h"]
             diff = f["team_h_difficulty"] if is_home else f["team_a_difficulty"]
-            color = FDR_COLORS.get(diff, "rgba(128,128,128,0.15)")
+            style = FDR_STYLES.get(diff, FDR_STYLE_UNKNOWN)
             label = html.escape(f"{team_short_map.get(opp, '?')} {'(H)' if is_home else '(A)'}")
             chips.append(
-                f'<span style="background:{color}; border-radius:4px; padding:2px 6px; font-size:0.78rem; '
+                f'<span style="{style}; border-radius:4px; padding:2px 6px; font-size:0.78rem; font-weight:600; '
                 f'white-space:nowrap; display:inline-block; margin:1px;">{label}</span>'
             )
         return "".join(chips)

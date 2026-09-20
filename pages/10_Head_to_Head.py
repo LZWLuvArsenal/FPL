@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from src.config import render_sidebar_settings
+from src.config import render_sidebar_settings, style_chart
 from src.fpl_api import get_bootstrap_static, get_element_summary, get_fixtures
 from src.team_model import project_match, team_rates, venue_factors
 from src.understat import (
@@ -56,7 +56,7 @@ if finished_events:
         "Recent form window (gameweeks)",
         1,
         len(finished_events),
-        len(finished_events),
+        min(5, len(finished_events)),
         help="How many of the most recently completed gameweeks feed each team's xG and xGC per match.",
     )
 xgf_rate, xgc_rate = team_rates(bootstrap, fixtures, finished_events, form_window)
@@ -99,6 +99,7 @@ else:
         yaxis=dict(visible=False),
         legend=dict(orientation="h", traceorder="normal", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=14)),
     )
+    style_chart(outcome_fig)
     st.plotly_chart(outcome_fig, width="stretch")
 
     col1, col2, col3 = st.columns(3)
@@ -258,6 +259,7 @@ if st.checkbox("Load all-time head-to-head record", value=False):
             yaxis=dict(visible=False),
             legend=dict(orientation="h", traceorder="normal", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=14)),
         )
+        style_chart(record_fig)
         st.plotly_chart(record_fig, width="stretch")
 
         score_counts = Counter(perspective_scores)

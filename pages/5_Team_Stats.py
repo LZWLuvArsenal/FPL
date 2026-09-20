@@ -2,7 +2,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.config import render_sidebar_settings
+from src.config import render_sidebar_settings, style_chart
 from src.fpl_api import get_bootstrap_static, get_fixtures
 from src.understat import (
     aggregate_team_season,
@@ -142,11 +142,16 @@ with tab2:
         y="xg_against",
         text="team",
         color="points",
-        color_continuous_scale="Viridis",
+        color_continuous_scale=[[0, "#ff4d8d"], [0.5, "#ffd54a"], [1, "#00ff87"]],  # bright at both ends on dark
         labels={"xg_for": "xG For (attack)", "xg_against": "xG Against (defense)", "points": "Points"},
     )
-    fig.update_traces(textposition="top center")
+    fig.update_traces(
+        textposition="top center",
+        textfont=dict(color="#FFFFFF", size=13),
+        marker=dict(size=16, line=dict(color="#FFFFFF", width=1.5)),
+    )
     fig.update_yaxes(autorange="reversed")
+    style_chart(fig)
     st.plotly_chart(fig, width="stretch")
     st.caption("Top-right is best: high attacking xG, low xG conceded (the defence axis is flipped, so lower is higher).")
 

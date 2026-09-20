@@ -4,8 +4,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.config import load_config, render_sidebar_settings, update_config
+from src.config import load_config, render_sidebar_settings, style_chart, update_config
 from src.fpl_api import get_bootstrap_static, get_entry, get_entry_picks, get_entry_transfers, get_league_standings
+from src.pitch import shirt_url
 from src.utils import current_event, players_df
 
 st.set_page_config(page_title="League Explorer - FPL Dashboard", page_icon="⚽", layout="wide")
@@ -64,6 +65,8 @@ st.subheader(standings_data["league"]["name"])
 _CARD_STYLE = "display:grid; grid-template-columns:repeat(auto-fill, minmax(108px, 1fr)); gap:8px; margin-bottom:4px;"
 
 
+_TEAM_CODES = {t["id"]: t["code"] for t in bootstrap["teams"]}
+
 _POS_LABELS = {"GKP": "GK", "DEF": "DF", "MID": "MF", "FWD": "FW"}
 
 
@@ -95,9 +98,11 @@ def _player_card(row, bench, ownership_pct, effective_ownership_pct=None):
             own_line = f'<div style="font-size:0.68rem; opacity:0.55; margin-top:2px;">{ownership_pct:.0f}% owned</div>'
     else:
         own_line = ""
+    shirt = shirt_url(_TEAM_CODES.get(int(row["team"]), 0), row["player_pos"] == "GKP")
     return (
         f'<div style="background:{bg}; border:1px solid rgba(128,128,128,0.25); border-radius:8px; '
         f'padding:6px 4px; text-align:center;">'
+        f'<img src="{shirt}" alt="" style="height:44px; display:block; margin:0 auto 2px;">'
         f'<div style="font-size:0.82rem; font-weight:600; line-height:1.25;">{name}{role}</div>'
         f'<div style="font-size:0.72rem; opacity:0.65;">{team} ({pos})</div>'
         f'<div style="font-size:0.95rem; font-weight:700; margin-top:2px;">{row["event_points"]} pts</div>'
@@ -109,7 +114,7 @@ def _player_card(row, bench, ownership_pct, effective_ownership_pct=None):
 def render_squad_grid(picks_payload, own_df=None):
     df = pd.DataFrame(picks_payload["picks"]).merge(
         players.reset_index().rename(columns={"position": "player_pos"})[
-            ["id", "web_name", "team_short", "event_points", "player_pos"]
+            ["id", "web_name", "team", "team_short", "event_points", "player_pos"]
         ],
         left_on="element",
         right_on="id",
@@ -196,6 +201,93 @@ if league_picks:
     own_df["starters"] = own_df["owners"] - own_df["benched"]
     own_df["effective_ownership_pct"] = (own_df["starters"] + own_df["captains"]) / len(league_picks) * 100
     own_df = own_df.join(players[["web_name", "team_name", "team_short", "position", "price"]])
+
+transfer_cache_key = f"league_transfers_{league_id}"
+
+
+def load_league_transfers():
+    """Fetches every member's transfer history (one request per manager) into session state."""
+    loaded = {}
+    progress = st.progress(0.0)
+    for i, (_, m) in enumerate(members.iterrows()):
+        try:
+            loaded[int(m["entry"])] = get_entry_transfers(int(m["entry"]))
+        except Exception:
+            pass
+        progress.progress((i + 1) / len(members))
+    progress.empty()
+    st.session_state[transfer_cache_key] = loaded
+
+
+def league_transfers_df():
+    """One row per transfer across the league, newest first; None until the transfers have been loaded."""
+    all_transfers = st.session_state.get(transfer_cache_key)
+    if not all_transfers:
+        return None
+    manager_names = dict(zip(members["entry"].astype(int), members["player_name"]))
+    team_names_map = dict(zip(members["entry"].astype(int), members["entry_name"]))
+    players_by_id = players["web_name"]
+    rows = [
+        {
+            "GW": t["event"],
+            "_entry": entry_id,
+            "Manager": manager_names.get(entry_id, entry_id),
+            "Team": team_names_map.get(entry_id, ""),
+            "_in_id": t["element_in"],
+            "_out_id": t["element_out"],
+            "Player In": players_by_id.get(t["element_in"], "?"),
+            "Cost In": t["element_in_cost"] / 10,
+            "Player Out": players_by_id.get(t["element_out"], "?"),
+            "Cost Out": t["element_out_cost"] / 10,
+            "_time": t["time"],
+        }
+        for entry_id, transfers in all_transfers.items()
+        for t in transfers
+    ]
+    return pd.DataFrame(rows).sort_values("_time", ascending=False) if rows else pd.DataFrame()
+
+
+def transfer_ranking(tdf, id_col):
+    """Players ranked by how many *different managers* moved them in (or out). Counting managers rather
+    than transfers stops Free Hit / Wildcard churn, or one manager shuffling the same player in and out
+    repeatedly, from inflating a player's number."""
+    ranked = (
+        tdf.groupby(id_col)["_entry"].nunique().rename("Managers").to_frame()
+        .join(players[["web_name", "team_short", "position", "price"]])
+        .rename(columns={"web_name": "Player", "team_short": "Club", "position": "Pos", "price": "Price"})
+    )
+    return ranked.sort_values(["Managers", "Player"], ascending=[False, True])[["Player", "Club", "Pos", "Price", "Managers"]]
+
+
+def render_transfers_in_out():
+    """Most transferred in / out players for the gameweek chosen in the selector at the top of the page.
+    Transfers load automatically (one request per manager, cached) once the full league data is loaded."""
+    st.subheader(f"Transfers In & Out — GW{gw}")
+    if transfer_cache_key not in st.session_state:
+        with st.spinner(f"Loading transfers for {len(members)} managers..."):
+            load_league_transfers()
+    all_tdf = league_transfers_df()
+    if all_tdf is None:
+        st.info("Couldn't load any transfers for this league right now.")
+        return
+    gw_tdf = all_tdf[all_tdf["GW"] == gw] if not all_tdf.empty else all_tdf
+    if gw_tdf.empty:
+        st.info(f"No transfers made by anyone in this league for GW{gw}.")
+        return
+    st.caption(
+        f"{gw_tdf['_entry'].nunique()} of {len(members)} managers made {len(gw_tdf)} transfer(s) in GW{gw}. Tables count "
+        "distinct managers per player, so Free Hit / Wildcard churn or moving the same player in and out repeatedly "
+        "counts once."
+    )
+    price_cfg = {"Price": st.column_config.NumberColumn(format="£%.1f")}
+    in_col, out_col = st.columns(2)
+    with in_col:
+        st.markdown("**📥 Most transferred in**")
+        st.dataframe(transfer_ranking(gw_tdf, "_in_id"), hide_index=True, width="stretch", column_config=price_cfg)
+    with out_col:
+        st.markdown("**📤 Most transferred out**")
+        st.dataframe(transfer_ranking(gw_tdf, "_out_id"), hide_index=True, width="stretch", column_config=price_cfg)
+
 
 tab1, tab2, tab3, tab4 = st.tabs(["League Overview", "Manager Detail", "Player Breakdown", "All Transfers"])
 
@@ -313,7 +405,10 @@ with tab2:
 
 with tab3:
     if not league_picks:
-        st.info("Click **Load full league data** above to see ownership, captaincy, and rank-threat breakdowns.")
+        st.info(
+            "Click **Load full league data** above to see ownership, captaincy, rank-threat breakdowns, and "
+            "who the league transferred in and out."
+        )
     else:
         num_managers = len(league_picks)
 
@@ -322,13 +417,13 @@ with tab3:
             st.subheader("Most Owned in League")
             top_owned = own_df.sort_values("owners", ascending=False).head(15)
             st.dataframe(
-                top_owned[["web_name", "team_name", "position", "owners", "ownership_pct"]].round(0).rename(
+                top_owned[["web_name", "team_short", "position", "owners", "ownership_pct"]].round(0).rename(
                     columns={
                         "web_name": "Player",
-                        "team_name": "Team",
+                        "team_short": "Team",
                         "position": "Pos",
-                        "owners": "Owned By",
-                        "ownership_pct": "Ownership %",
+                        "owners": "Owned",
+                        "ownership_pct": "Own %",
                     }
                 ),
                 hide_index=True,
@@ -338,13 +433,13 @@ with tab3:
             st.subheader("Most Captained in League")
             top_captained = own_df[own_df["captains"] > 0].sort_values("captains", ascending=False).head(15)
             st.dataframe(
-                top_captained[["web_name", "team_name", "position", "captains", "captain_pct"]].round(0).rename(
+                top_captained[["web_name", "team_short", "position", "captains", "captain_pct"]].round(0).rename(
                     columns={
                         "web_name": "Player",
-                        "team_name": "Team",
+                        "team_short": "Team",
                         "position": "Pos",
-                        "captains": "Captained By",
-                        "captain_pct": "Captain %",
+                        "captains": "Captained",
+                        "captain_pct": "Capt %",
                     }
                 ),
                 hide_index=True,
@@ -354,19 +449,21 @@ with tab3:
             st.subheader("Most Benched in League")
             top_benched = own_df[own_df["benched"] > 0].sort_values("benched", ascending=False).head(15)
             st.dataframe(
-                top_benched[["web_name", "team_name", "position", "benched", "benched_pct"]].round(0).rename(
+                top_benched[["web_name", "team_short", "position", "benched", "benched_pct"]].round(0).rename(
                     columns={
                         "web_name": "Player",
-                        "team_name": "Team",
+                        "team_short": "Team",
                         "position": "Pos",
-                        "benched": "Benched By",
-                        "benched_pct": "Benched %",
+                        "benched": "Benched",
+                        "benched_pct": "Bench %",
                     }
                 ),
                 hide_index=True,
                 width="stretch",
             )
             st.caption("Owned but left out of the starting XI this gameweek.")
+
+        render_transfers_in_out()
 
         st.subheader("Highest Effective Ownership in League")
         st.caption(
@@ -379,14 +476,14 @@ with tab3:
         top_eo = own_df[own_df["owners"] > 0].sort_values("effective_ownership_pct", ascending=False).head(15)
         st.dataframe(
             top_eo[
-                ["web_name", "team_name", "position", "owners", "captains", "effective_ownership_pct"]
+                ["web_name", "team_short", "position", "owners", "captains", "effective_ownership_pct"]
             ].round(0).rename(
                 columns={
                     "web_name": "Player",
-                    "team_name": "Team",
+                    "team_short": "Team",
                     "position": "Pos",
                     "owners": "Owned By",
-                    "captains": "Captained By",
+                    "captains": "Captained",
                     "effective_ownership_pct": "Effective Ownership %",
                 }
             ),
@@ -405,6 +502,7 @@ with tab3:
                 return
             fig = px.pie(main, names="label", values=pct_col, title=title, hole=0.4)
             fig.update_traces(textinfo="label+percent")
+            style_chart(fig)
             st.plotly_chart(fig, width="stretch")
 
         pie_col1, pie_col2 = st.columns(2)
@@ -442,10 +540,10 @@ with tab3:
                     st.caption("None at this threshold.")
                     return
                 st.dataframe(
-                    df[["web_name", "team_name", "position", "price"] + cols_pct].round(0).rename(
+                    df[["web_name", "team_short", "position", "price"] + cols_pct].round(0).rename(
                         columns={
                             "web_name": "Player",
-                            "team_name": "Team",
+                            "team_short": "Team",
                             "position": "Pos",
                             "price": "Price",
                             **{c: label for c in cols_pct},
@@ -470,59 +568,32 @@ with tab3:
             )
             show(my_diffs, ["rival_ownership_pct"], "Rival Ownership %")
 
-with tab4:
+@st.fragment
+def render_all_transfers_log():
     st.caption(f"{len(members)} managers in this league. Loading transfers pulls one request per manager.")
-    transfer_cache_key = f"league_transfers_{league_id}"
     if st.button("Load all transfers", width="stretch"):
-        loaded_transfers = {}
-        progress = st.progress(0.0)
-        for i, (_, m) in enumerate(members.iterrows()):
-            try:
-                loaded_transfers[int(m["entry"])] = get_entry_transfers(int(m["entry"]))
-            except Exception:
-                pass
-            progress.progress((i + 1) / len(members))
-        progress.empty()
-        st.session_state[transfer_cache_key] = loaded_transfers
+        load_league_transfers()
 
-    all_transfers = st.session_state.get(transfer_cache_key)
-    if not all_transfers:
+    tdf = league_transfers_df()
+    if tdf is None:
         st.info("Click **Load all transfers** above to see every transfer made in this league this season.")
+    elif tdf.empty:
+        st.info("No transfers made by anyone in this league yet.")
     else:
-        manager_names = dict(zip(members["entry"].astype(int), members["player_name"]))
-        team_names_map = dict(zip(members["entry"].astype(int), members["entry_name"]))
-        players_by_id = players.set_index("id")["web_name"]
+        gw_filter = st.multiselect("Filter by GW", sorted(tdf["GW"].unique()), default=[], key="log_gw_filter")
+        if gw_filter:
+            tdf = tdf[tdf["GW"].isin(gw_filter)]
+        st.caption(f"{len(tdf)} transfer(s) shown.")
+        st.dataframe(
+            tdf.drop(columns=["_time", "_in_id", "_out_id", "_entry"]),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Cost In": st.column_config.NumberColumn(format="£%.1f"),
+                "Cost Out": st.column_config.NumberColumn(format="£%.1f"),
+            },
+        )
 
-        rows = []
-        for entry_id, transfers in all_transfers.items():
-            for t in transfers:
-                rows.append(
-                    {
-                        "GW": t["event"],
-                        "Manager": manager_names.get(entry_id, entry_id),
-                        "Team": team_names_map.get(entry_id, ""),
-                        "Player In": players_by_id.get(t["element_in"], "?"),
-                        "Cost In": t["element_in_cost"] / 10,
-                        "Player Out": players_by_id.get(t["element_out"], "?"),
-                        "Cost Out": t["element_out_cost"] / 10,
-                        "_time": t["time"],
-                    }
-                )
 
-        if not rows:
-            st.info("No transfers made by anyone in this league yet.")
-        else:
-            tdf = pd.DataFrame(rows).sort_values("_time", ascending=False)
-            gw_filter = st.multiselect("Filter by GW", sorted(tdf["GW"].unique()), default=[])
-            if gw_filter:
-                tdf = tdf[tdf["GW"].isin(gw_filter)]
-            st.caption(f"{len(tdf)} transfer(s) shown.")
-            st.dataframe(
-                tdf.drop(columns="_time"),
-                hide_index=True,
-                width="stretch",
-                column_config={
-                    "Cost In": st.column_config.NumberColumn(format="£%.1f"),
-                    "Cost Out": st.column_config.NumberColumn(format="£%.1f"),
-                },
-            )
+with tab4:
+    render_all_transfers_log()

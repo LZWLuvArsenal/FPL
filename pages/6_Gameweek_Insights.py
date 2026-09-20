@@ -5,8 +5,9 @@ import plotly.express as px
 import pulp
 import streamlit as st
 
-from src.config import render_sidebar_settings
+from src.config import render_sidebar_settings, style_chart
 from src.fpl_api import get_bootstrap_static, get_element_summary, get_event_live
+from src.pitch import render_pitch
 from src.utils import current_event, players_df
 
 st.set_page_config(page_title="Gameweek Insights - FPL Dashboard", page_icon="⚽", layout="wide")
@@ -105,6 +106,7 @@ for e in live["elements"]:
         {
             "id": e["id"],
             "web_name": p["web_name"],
+            "team": p["team"],
             "team_short": p["team_short"],
             "position": p["position"],
             "price": p["price"],
@@ -142,32 +144,43 @@ else:
 
         st.metric("Team of the Week Total (incl. Captain)", f"{totw['points'].sum() + totw.loc[captain_id, 'points']:.0f}")
 
-        totw_header = "".join(
-            f'<th style="text-align:{align}; padding:6px 8px; font-size:0.78rem; opacity:0.7;">{label}</th>'
-            for label, align in [("Pos", "left"), ("Player", "left"), ("Team", "left"), ("Price", "right"), ("Points", "right")]
-        )
-        totw_rows_html = []
-        for idx, r in totw.iterrows():
-            badge = (
-                ' <span style="background:#ffb300; color:#1a1a1a; font-size:0.62rem; font-weight:700; '
-                'padding:1px 4px; border-radius:4px; margin-left:2px;">C</span>'
-                if idx == captain_id
-                else ""
+        totw_view = st.radio("Team of the Week view", ["Pitch view", "List view"], horizontal=True, label_visibility="collapsed")
+        if totw_view == "Pitch view":
+            team_codes = {t["id"]: t["code"] for t in bootstrap["teams"]}
+            pitch_df = totw.reset_index().rename(columns={"points": "event_points"})
+            pitch_df["slot"] = range(1, len(pitch_df) + 1)
+            pitch_df["is_captain"] = pitch_df["id"] == captain_id
+            pitch_df["is_vice_captain"] = False
+            st.markdown(render_pitch(pitch_df, team_codes, {}), unsafe_allow_html=True)
+            st.caption("C = captain (the highest scorer, points doubled in the total).")
+        else:
+            totw_header = "".join(
+                f'<th style="text-align:{align}; padding:6px 8px; font-size:0.78rem; opacity:0.7;">{label}</th>'
+                for label, align in [("Pos", "left"), ("Player", "left"), ("Team", "left"), ("Price", "right"), ("Points", "right")]
             )
-            totw_rows_html.append(
-                '<tr style="border-top:1px solid rgba(128,128,128,0.15);">'
-                f'<td style="padding:6px 8px; opacity:0.7;">{r["position"]}</td>'
-                f'<td style="padding:6px 8px; font-weight:600;">{html.escape(r["web_name"])}{badge}</td>'
-                f'<td style="padding:6px 8px;">{html.escape(r["team_short"])}</td>'
-                f'<td style="padding:6px 8px; text-align:right;">£{r["price"]:.1f}</td>'
-                f'<td style="padding:6px 8px; text-align:right; font-weight:700;">{r["points"]}</td>'
-                "</tr>"
+            totw_rows_html = []
+            for idx, r in totw.iterrows():
+                badge = (
+                    ' <span style="background:#ffb300; color:#1a1a1a; font-size:0.62rem; font-weight:700; '
+                    'padding:1px 4px; border-radius:4px; margin-left:2px;">C</span>'
+                    if idx == captain_id
+                    else ""
+                )
+                totw_rows_html.append(
+                    '<tr style="border-top:1px solid rgba(128,128,128,0.15);">'
+                    f'<td style="padding:6px 8px; opacity:0.7;">{r["position"]}</td>'
+                    f'<td style="padding:6px 8px; font-weight:600;">{html.escape(r["web_name"])}{badge}</td>'
+                    f'<td style="padding:6px 8px;">{html.escape(r["team_short"])}</td>'
+                    f'<td style="padding:6px 8px; text-align:right;">£{r["price"]:.1f}</td>'
+                    f'<td style="padding:6px 8px; text-align:right; font-weight:700;">{r["points"]}</td>'
+                    "</tr>"
+                )
+            st.markdown(
+                '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+                f"<thead><tr>{totw_header}</tr></thead><tbody>{''.join(totw_rows_html)}</tbody></table></div>",
+                unsafe_allow_html=True,
             )
-        st.markdown(
-            '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
-            f"<thead><tr>{totw_header}</tr></thead><tbody>{''.join(totw_rows_html)}</tbody></table></div>",
-            unsafe_allow_html=True,
-        )
+
 
 st.subheader("Chips Played")
 chips_df = pd.DataFrame(event["chip_plays"])
@@ -183,6 +196,7 @@ fig = px.bar(
 )
 fig.update_traces(texttemplate="%{text:,}", textposition="outside", cliponaxis=False)
 fig.update_layout(margin=dict(r=60))
+style_chart(fig)
 st.plotly_chart(fig, width="stretch")
 
 st.caption(

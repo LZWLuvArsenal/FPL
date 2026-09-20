@@ -261,7 +261,7 @@ with tabs[8]:
             format_func=lambda f: f"{team_short[f['team_h']]} (H) vs {team_short[f['team_a']]} (A)",
             key="worked_fixture",
         )
-        window = st.slider("Recent form window (gameweeks)", 1, len(finished_events), len(finished_events), key="worked_window")
+        window = st.slider("Recent form window (gameweeks)", 1, len(finished_events), min(5, len(finished_events)), key="worked_window")
         xgf, xgc = team_rates(bootstrap, fixtures, finished_events, window)
         venue = venue_factors(fixtures)
         h_id, a_id = chosen["team_h"], chosen["team_a"]
