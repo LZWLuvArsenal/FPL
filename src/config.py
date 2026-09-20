@@ -159,12 +159,38 @@ def inject_theme_css() -> None:
     )
 
 
+TEAM_COOKIE = "fpl_team_id"
+
+
+def _saved_team_cookie() -> str:
+    """The Team ID remembered in this browser's cookie (visitors only), or ''."""
+    try:
+        value = st.context.cookies.get(TEAM_COOKIE, "")
+    except Exception:
+        return ""
+    return value if value.isdigit() else ""
+
+
+def _remember_team_in_browser(team_id: str) -> None:
+    """Stores the Team ID in a year-long cookie so it survives a refresh or a return visit. It's written
+    by a zero-height iframe (same origin as the app) and read back server-side via st.context.cookies."""
+    digits = team_id.strip() if team_id.strip().isdigit() else ""
+    max_age = 31536000 if digits else 0  # empty / invalid ID clears the cookie
+    st.components.v1.html(
+        f"<script>document.cookie = '{TEAM_COOKIE}={digits}; max-age={max_age}; path=/; SameSite=Lax';</script>",
+        height=0,
+    )
+
+
 def render_sidebar_settings() -> None:
-    """Renders the Team ID / League ID inputs shared by every page, backed by session_state (+ disk for the owner)."""
+    """Renders the Team ID / League ID inputs shared by every page. The owner's are saved to disk; a visitor's
+    are kept in the session and remembered in a browser cookie."""
     inject_theme_css()
     if "config_loaded" not in st.session_state:
         saved = load_config()
-        st.session_state["team_id"] = saved.get("team_id") or st.query_params.get("team", "")
+        st.session_state["team_id"] = (
+            saved.get("team_id") or st.query_params.get("team", "") or ("" if is_owner() else _saved_team_cookie())
+        )
         st.session_state["config_loaded"] = True
 
     with st.sidebar:
@@ -175,6 +201,7 @@ def render_sidebar_settings() -> None:
             update_config(team_id=team_id)
             if not is_owner():
                 st.query_params["team"] = team_id  # bookmarkable link, since visitors have no saved config
+                _remember_team_in_browser(team_id)  # and remembered in this browser for next time
             st.success("Saved")
         st.caption(
             "Find your Team ID in the URL when viewing 'Points' on the official FPL "
