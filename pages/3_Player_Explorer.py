@@ -26,7 +26,10 @@ if teams:
     filtered = filtered[filtered["team_name"].isin(teams)]
 filtered = filtered[filtered["price"].between(*price_range)]
 if search:
-    filtered = filtered[filtered["full_name"].str.contains(search, case=False, na=False)]
+    filtered = filtered[
+        filtered["full_name"].str.contains(search, case=False, na=False)
+        | filtered["web_name"].str.contains(search, case=False, na=False)
+    ]
 
 sort_col = st.selectbox(
     "Sort by",
@@ -49,7 +52,7 @@ sort_col = st.selectbox(
 filtered = filtered.sort_values(sort_col, ascending=False)
 
 display_cols = [
-    "full_name",
+    "web_name",
     "team_name",
     "position",
     "price",
@@ -70,7 +73,7 @@ st.caption(f"{len(filtered)} players — xG/xA/xGC are season totals from FPL's 
 st.dataframe(
     filtered[display_cols].rename(
         columns={
-            "full_name": "Name",
+            "web_name": "Name",
             "team_name": "Team",
             "position": "Pos",
             "price": "Price",

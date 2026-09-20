@@ -60,3 +60,10 @@ def get_entry_picks(team_id: int, event: int) -> dict:
 @st.cache_data(ttl=300)
 def get_league_standings(league_id: int, page: int = 1) -> dict:
     return _get(f"/leagues-classic/{league_id}/standings/", page_standings=page)
+
+
+@st.cache_data(ttl=3600)
+def get_set_piece_notes() -> dict:
+    """FPL's own editorial notes on penalty/free-kick/corner order per team. Free text, not
+    structured per-player frequency stats — and often placeholder text early in the season."""
+    return _get("/team/set-piece-notes/")

@@ -20,7 +20,7 @@ df["change_season"] = df["cost_change_start"] / 10
 df["net_transfers"] = df["transfers_in_event"] - df["transfers_out_event"]
 
 display_cols_map = {
-    "full_name": "Name",
+    "web_name": "Name",
     "team_name": "Team",
     "position": "Pos",
     "price": "Price",
@@ -31,7 +31,7 @@ display_cols_map = {
 
 
 def show_table(data, change_col):
-    cols = ["full_name", "team_name", "position", "price", "selected_by_percent", change_col]
+    cols = ["web_name", "team_name", "position", "price", "selected_by_percent", change_col]
     st.dataframe(
         data[cols].rename(columns=display_cols_map),
         hide_index=True,
@@ -71,7 +71,7 @@ with tab3:
 
     def show_transfer_table(data):
         st.dataframe(
-            data[["full_name", "team_name", "position", "price", "selected_by_percent", "net_transfers"]].rename(
+            data[["web_name", "team_name", "position", "price", "selected_by_percent", "net_transfers"]].rename(
                 columns={**display_cols_map, "net_transfers": "Net Transfers"}
             ),
             hide_index=True,
@@ -138,7 +138,7 @@ with tab4:
 
             st.dataframe(
                 squad_df[
-                    ["full_name", "team_name", "position", "price", "change_season", "net_transfers", "Risk"]
+                    ["web_name", "team_name", "position", "price", "change_season", "net_transfers", "Risk"]
                 ].rename(columns=display_cols_map),
                 hide_index=True,
                 width="stretch",

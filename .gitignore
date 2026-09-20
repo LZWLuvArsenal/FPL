@@ -4,3 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 user_config.json
 .claude/settings.local.json
+squad_tracker.json
+*.pdf
+=2.8
+.claude/

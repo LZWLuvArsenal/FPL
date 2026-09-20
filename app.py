@@ -44,5 +44,6 @@ Use the sidebar to set your **Team ID** and **Mini-League ID**, then explore the
 - **Price Changes** — today's risers/fallers and season-to-date price movement
 - **League Explorer** — any mini-league member's squad, captain, and transfers
 - **Recommendations** — attacking/clean-sheet picks and differentials for the next gameweek
+- **How It Works** — full explanations of every projected goal, point and probability
 """
 )
