@@ -8,9 +8,9 @@ import pulp
 import streamlit as st
 
 from src.config import is_owner, render_sidebar_settings
-from src.fpl_api import get_bootstrap_static, get_entry, get_event_live, get_fixtures
+from src.fpl_api import get_bootstrap_static, get_entry, get_entry_picks, get_event_live, get_fixtures
 from src.tracker import add_snapshot
-from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, next_event, players_df, teams_df
+from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df, teams_df
 
 st.set_page_config(page_title="Recommendations - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
@@ -485,12 +485,6 @@ def _defensive_section(position, label, emoji, n=15):
     return pd.concat([by_next_gw, by_window]).drop_duplicates(subset="id")
 
 
-gk_pool = _defensive_section("GKP", "Goalkeepers", "🥅", n=10)
-def_pool = _defensive_section("DEF", "Defenders", "🛡️")
-mid_pool = _attacking_section("MID", "Midfielders", "🎯")
-fwd_pool = _attacking_section("FWD", "Forwards", "⚡")
-
-
 def _solve_squad(pool, squad_budget):
     """Best 15-man squad (2 GK, 5 DEF, 5 MID, 3 FWD, max 3/club) within budget, maximizing
     total Projected Pts. Returns None if infeasible."""
@@ -532,6 +526,344 @@ def _solve_starting_xi(squad):
     remaining = starters.drop(index=captain_id)
     vice_id = remaining["projected_pts"].idxmax() if not remaining.empty else None
     return squad, captain_id, vice_id
+
+
+def _availability(row):
+    """Share of the gameweek this player is expected to be fit for: 0 if injured/suspended/unavailable,
+    the news' chance of playing if flagged doubtful, otherwise 1."""
+    if row["status"] in ("i", "s", "u", "n"):
+        return 0.0
+    chance = row["chance_of_playing_next_round"]
+    if row["status"] == "d" and chance is not None and not pd.isna(chance):
+        return float(chance) / 100
+    return 1.0
+
+
+def _expected_pts(row, fixtures_by_team):
+    """The page's points model for one player over the given fixtures, scaled by their chance of playing
+    (injury news) and by rotation risk (mins/game ÷ 75, capped at 1)."""
+    raw = _project_points(row, fixtures_by_team.get(row["team"], []))
+    raw = 0.0 if pd.isna(raw) else float(raw)
+    minutes_factor = min(1.0, float(row["mins_per_game"]) / 75) if row["mins_per_game"] else 0.0
+    return raw * _availability(row) * minutes_factor
+
+
+def _best_xi_total(df, column):
+    """Best valid XI's expected points (captain counted twice) using the given projection column."""
+    d = df.copy()
+    d["projected_pts"] = d[column]
+    best, captain_id, vice_id = _solve_starting_xi(d)
+    xi = best[best["is_starter"]]
+    return xi["projected_pts"].sum() + best.loc[captain_id, "projected_pts"], best, captain_id
+
+
+@st.fragment
+def _render_transfer_planner(squad_rows, my_team_id):
+    """Before/after comparison for up to 3 planned transfers. A fragment, so changing a dropdown only
+    reruns this block instead of the whole page."""
+    st.markdown("#### 🔁 Plan a transfer — compare before / after")
+    st.caption(
+        "Pick who you'd sell and who you'd buy (same position). Both sides are compared using their best "
+        "possible XI, so the change shown is what the transfer is really worth."
+    )
+    bank = None
+    try:
+        bank = get_entry(int(my_team_id))["last_deadline_bank"] / 10
+    except Exception:
+        pass
+
+    ctrl1, ctrl2, ctrl3 = st.columns(3)
+    n_transfers = int(ctrl1.number_input("Number of transfers", min_value=1, max_value=15, value=1, key="tp_n"))
+    chip = ctrl2.selectbox(
+        "Chip", ["None", "Wildcard / Free Hit"], key="tp_chip",
+        help="Both chips give unlimited free transfers, so no points hit is applied.",
+    )
+    free_transfers = ctrl3.number_input(
+        "Free transfers you have", min_value=0, max_value=5, value=1, key="tp_ft", disabled=chip != "None"
+    )
+
+    position_order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+    sellable = squad_rows.assign(_o=squad_rows["position"].map(position_order)).sort_values(["_o", "web_name"])
+    sell_labels = {
+        f"{r['web_name']} ({r['position']}, {r['team_short']}, £{r['price']:.1f})": pid for pid, r in sellable.iterrows()
+    }
+    squad_ids = set(squad_rows.index)
+    cache_key = ("planner_proj", gw, num_gw, form_window, len(players))
+    if st.session_state.get("_planner_cache_key") != cache_key:
+        projected = players.set_index("id")
+        projected = projected.assign(
+            _exp=projected.apply(lambda r: _expected_pts(r, next_gw_team_fixtures), axis=1),
+            _win=projected.apply(lambda r: _expected_pts(r, team_fixtures), axis=1),
+        )
+        st.session_state["_planner_cache"] = projected
+        st.session_state["_planner_cache_key"] = cache_key
+    all_players = st.session_state["_planner_cache"]
+
+    sells, buys = [], []
+    for i in range(n_transfers):
+        left, right = st.columns(2)
+        remaining = [l for l, pid in sell_labels.items() if pid not in sells]
+        sell_choice = left.selectbox(f"Transfer {i + 1}: sell", ["— choose —"] + remaining, key=f"tp_sell_{i}")
+        if sell_choice == "— choose —":
+            right.selectbox(f"Transfer {i + 1}: buy", ["— choose a player to sell first —"], key=f"tp_buy_{i}", disabled=True)
+            continue
+        sell_id = sell_labels[sell_choice]
+        pos = squad_rows.loc[sell_id, "position"]
+        pool = all_players[(all_players["position"] == pos) & ~all_players.index.isin(squad_ids | set(buys))]
+        pool = pool.sort_values("_exp", ascending=False)
+        buy_labels = {
+            f"{'🚫 ' if r['status'] in ('i', 's', 'u') else ''}{r['web_name']} ({r['team_short']}, £{r['price']:.1f}) — GW{gw} {r['_exp']:.1f} · next {num_gw} GW {r['_win']:.1f}": pid
+            for pid, r in pool.iterrows()
+        }
+        buy_choice = right.selectbox(
+            f"Transfer {i + 1}: buy ({pos}, best Next GW first)", ["— choose —"] + list(buy_labels), key=f"tp_buy_{i}"
+        )
+        if buy_choice == "— choose —":
+            continue
+        sells.append(sell_id)
+        buys.append(buy_labels[buy_choice])
+
+    if not sells:
+        st.info("Choose a player to sell and one to buy to see the before / after comparison.")
+        return
+
+    buy_rows = all_players.loc[buys].copy()
+    buy_rows["projected_pts"] = buy_rows["_exp"]
+    buy_rows["projected_pts_window"] = buy_rows["_win"]
+    after_squad = pd.concat([squad_rows.drop(index=sells), buy_rows], sort=False)
+
+    gw_before, _, _ = _best_xi_total(squad_rows, "projected_pts")
+    gw_after, after_best, after_captain = _best_xi_total(after_squad, "projected_pts")
+    win_before, _, _ = _best_xi_total(squad_rows, "projected_pts_window")
+    win_after, _, _ = _best_xi_total(after_squad, "projected_pts_window")
+    hit = 0 if chip != "None" else 4 * max(0, len(sells) - int(free_transfers))
+
+    a1, a2, a3 = st.columns(3)
+    a1.metric(f"GW{gw} — best XI before", f"{gw_before:.1f}")
+    a2.metric(f"GW{gw} — best XI after", f"{gw_after:.1f}")
+    a3.metric("Change (next GW)", f"{gw_after - gw_before:+.1f}")
+    b1, b2, b3 = st.columns(3)
+    b1.metric(f"Next {num_gw} GW — before", f"{win_before:.1f}")
+    b2.metric(f"Next {num_gw} GW — after", f"{win_after:.1f}")
+    b3.metric(
+        f"Change after {'−' + str(hit) + ' hit' if hit else 'no hit'}",
+        f"{win_after - win_before - hit:+.1f}",
+        f"{win_after - win_before:+.1f} before the hit" if hit else None,
+        delta_color="off",
+    )
+
+    # --- legality checks (budget uses current prices; FPL's actual selling price can be slightly lower) ---
+    sell_value = squad_rows.loc[sells, "price"].sum()
+    buy_value = buy_rows["price"].sum()
+    left_over = None if bank is None else bank + sell_value - buy_value
+    club_counts = after_squad["team_short"].value_counts()
+    too_many = club_counts[club_counts > 3]
+    problems = []
+    if left_over is not None and left_over < -0.001:
+        problems.append(f"over budget by £{-left_over:.1f}m")
+    if not too_many.empty:
+        problems.append("more than 3 players from " + ", ".join(too_many.index))
+
+    net = win_after - win_before - hit
+    span = f"the next {num_gw} GW{'s' if num_gw > 1 else ''}"
+    hit_text = f" after the −{hit} hit" if hit else ""
+    if problems:
+        st.warning(
+            f"🚫 Not possible as chosen — {' and '.join(problems)}. On paper the change is {net:+.1f} pts over {span}{hit_text}."
+        )
+    elif net > 1.0:
+        st.success(f"✅ Looks worth it: about {net:+.1f} pts over {span}{hit_text}.")
+    elif net < -1.0:
+        st.warning(f"❌ Probably not worth it: about {net:+.1f} pts over {span}{hit_text}.")
+    else:
+        st.info(f"➖ Marginal: about {net:+.1f} pts over {span}{hit_text} — within the model's noise.")
+    if left_over is not None and left_over >= -0.001:
+        st.caption(
+            f"💰 Bank after transfers: £{left_over:.1f}m (bank £{bank:.1f}m + sales £{sell_value:.1f}m − purchases "
+            f"£{buy_value:.1f}m, at current prices)."
+        )
+
+    # --- the moves side by side ---
+    move_rows = []
+    for sell_id, buy_id in zip(sells, buys):
+        out, inn = squad_rows.loc[sell_id], buy_rows.loc[buy_id]
+        move_rows.append(
+            '<tr style="border-top:1px solid rgba(128,128,128,0.15);">'
+            f'<td style="padding:6px 8px; font-weight:600;">⬇️ {html.escape(out["web_name"])} <span style="opacity:0.6;">({out["team_short"]}, £{out["price"]:.1f})</span></td>'
+            f'<td style="padding:6px 8px; font-weight:600;">⬆️ {html.escape(inn["web_name"])} <span style="opacity:0.6;">({inn["team_short"]}, £{inn["price"]:.1f})</span>{_doubtful_badge(inn)}</td>'
+            f'<td style="padding:6px 8px;">{_fixture_chips_html(inn["team"])}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{out["projected_pts"]:.1f} → <b>{inn["projected_pts"]:.1f}</b></td>'
+            f'<td style="padding:6px 8px; text-align:right;">{out["projected_pts_window"]:.1f} → <b>{inn["projected_pts_window"]:.1f}</b></td>'
+            "</tr>"
+        )
+    head = "".join(
+        f'<th style="text-align:{a}; padding:6px 8px; font-size:0.78rem; opacity:0.7; white-space:nowrap;">{l}</th>'
+        for l, a in [("Out", "left"), ("In", "left"), ("Incoming fixtures", "left"), (f"GW{gw} pts", "right"), (f"Next {num_gw} GW pts", "right")]
+    )
+    st.markdown(
+        '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+        f"<thead><tr>{head}</tr></thead><tbody>{''.join(move_rows)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    with st.expander("Suggested XI after these transfers"):
+        xi = after_best[after_best["is_starter"]].assign(_o=lambda d: d["position"].map(position_order))
+        xi = xi.sort_values(["_o", "projected_pts"], ascending=[True, False])
+        st.markdown(
+            "  \n".join(
+                f"{r['position']} — **{r['web_name']}**{' (C)' if pid == after_captain else ''} ({r['projected_pts']:.1f} pts)"
+                for pid, r in xi.iterrows()
+            )
+        )
+
+
+def _render_my_squad_advice():
+    st.divider()
+    st.subheader(f"🧑‍💼 Your Squad — Who to Start & Bench (GW{gw})")
+    my_team_id = str(st.session_state.get("team_id") or "").strip()
+    if not my_team_id.isdigit():
+        st.info("Enter your Team ID in the sidebar to get start / bench advice for your current squad.")
+        return
+    try:
+        picks = get_entry_picks(int(my_team_id), current_event(bootstrap))["picks"]
+    except Exception:
+        st.warning("Couldn't load your squad right now — check your Team ID in the sidebar.")
+        return
+
+    pick_df = pd.DataFrame(picks)
+    squad_rows = players.set_index("id").loc[pick_df["element"]].copy()
+    squad_rows["slot"] = pick_df["position"].to_numpy()
+    squad_rows["is_captain_now"] = pick_df["is_captain"].to_numpy()
+    squad_rows["is_vice_now"] = pick_df["is_vice_captain"].to_numpy()
+    squad_rows["fixtures_gw"] = squad_rows["team"].map(lambda t: len(next_gw_team_fixtures.get(t, [])))
+
+    squad_rows["projected_pts"] = squad_rows.apply(lambda r: _expected_pts(r, next_gw_team_fixtures), axis=1)
+    squad_rows["projected_pts_window"] = squad_rows.apply(lambda r: _expected_pts(r, team_fixtures), axis=1)
+    squad_rows["current_starter"] = squad_rows["slot"] <= 11
+
+    best, best_captain, best_vice = _solve_starting_xi(squad_rows)
+    exp = best["projected_pts"]
+
+    current_xi = best[best["current_starter"]]
+    best_xi = best[best["is_starter"]]
+    cur_captain = best.index[best["is_captain_now"]][0]
+    cur_vice = best.index[best["is_vice_now"]][0]
+    cur_cap_pts = exp[cur_captain] if _availability(best.loc[cur_captain]) > 0 else exp[cur_vice]
+    current_total = current_xi["projected_pts"].sum() + cur_cap_pts
+    best_total = best_xi["projected_pts"].sum() + exp[best_captain]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Your current XI (expected pts, incl. captain)", f"{current_total:.1f}")
+    c2.metric("Suggested XI", f"{best_total:.1f}")
+    c3.metric("Gain from changes", f"{best_total - current_total:+.1f}")
+
+    # --- the advice ---
+    to_start = list(best.index[best["is_starter"] & ~best["current_starter"]])
+    to_bench = list(best.index[~best["is_starter"] & best["current_starter"]])
+    lines = []
+    for pid in to_start:
+        partner = next((b for b in to_bench if best.loc[b, "position"] == best.loc[pid, "position"]), None)
+        if partner is None and to_bench:
+            partner = to_bench[0]
+        if partner is not None:
+            to_bench.remove(partner)
+            lines.append(
+                f"⬆️ **Start {best.loc[pid, 'web_name']}** ({best.loc[pid, 'position']}, {exp[pid]:.1f} pts) "
+                f"instead of **{best.loc[partner, 'web_name']}** ({best.loc[partner, 'position']}, {exp[partner]:.1f} pts)"
+            )
+    if not lines:
+        st.success("Your starting XI already matches the model's best XI for this gameweek.")
+    for line in lines:
+        st.markdown(line)
+    if best_captain != cur_captain:
+        st.markdown(
+            f"©️ **Captain {best.loc[best_captain, 'web_name']}** ({exp[best_captain]:.1f} pts) — currently "
+            f"{best.loc[cur_captain, 'web_name']} ({exp[cur_captain]:.1f} pts). "
+            f"Vice: {best.loc[best_vice, 'web_name']}."
+        )
+    else:
+        st.markdown(f"©️ Captain {best.loc[best_captain, 'web_name']} is the model's best captain too.")
+
+    warnings = []
+    for pid, r in best.iterrows():
+        if r["fixtures_gw"] == 0:
+            warnings.append(f"**{r['web_name']}** has no fixture in GW{gw}.")
+        elif r["status"] in ("i", "s", "u", "n"):
+            warnings.append(f"**{r['web_name']}** is out — {r['news'] or STATUS_LABELS.get(r['status'], 'unavailable')}.")
+        elif r["status"] == "d":
+            warnings.append(f"**{r['web_name']}** is doubtful — {r['news'] or 'check the latest news'}.")
+    if warnings:
+        with st.expander(f"⚠️ {len(warnings)} availability warning(s) in your squad", expanded=True):
+            for w in warnings:
+                st.markdown(f"- {w}")
+
+    # --- full squad table ---
+    order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+    # Starters by position; bench in FPL's substitute order (keeper first, then outfield by expected points).
+    table = best.assign(
+        _bench=~best["is_starter"],
+        _pos=[
+            (0 if pos == "GKP" else 1) if bench_flag else order[pos]
+            for pos, bench_flag in zip(best["position"], ~best["is_starter"])
+        ],
+    )
+    table = table.sort_values(["_bench", "_pos", "projected_pts"], ascending=[True, True, False])
+    bench_labels, outfield_n = {}, 0
+    for pid, r in table[table["_bench"]].iterrows():
+        if r["position"] == "GKP":
+            bench_labels[pid] = "BENCH GK"
+        else:
+            outfield_n += 1
+            bench_labels[pid] = f"BENCH {outfield_n}"
+    header = "".join(
+        f'<th style="text-align:{align}; padding:6px 8px; font-size:0.78rem; opacity:0.7; white-space:nowrap;">{label}</th>'
+        for label, align in [
+            ("Suggested", "left"), ("Now", "left"), ("Player", "left"), ("Team", "left"), ("Pos", "left"),
+            ("Fixtures", "left"), (f"GW{gw} Pts", "right"), (f"Next {num_gw} GW Pts", "right"), ("Mins/Game", "right"),
+        ]
+    )
+    rows_html = []
+    for pid, r in table.iterrows():
+        badge_style = "background:#00ff87; color:#14001c;" if r["is_starter"] else "background:rgba(128,128,128,0.35);"
+        role = " (C)" if pid == best_captain else " (VC)" if pid == best_vice else ""
+        moved = r["is_starter"] != r["current_starter"]
+        move_mark = " ⬆️" if moved and r["is_starter"] else " ⬇️" if moved else ""
+        rows_html.append(
+            '<tr style="border-top:1px solid rgba(128,128,128,0.15);">'
+            f'<td style="padding:6px 8px; white-space:nowrap;"><span style="{badge_style} font-size:0.7rem; '
+            f'font-weight:700; padding:2px 8px; border-radius:4px;">{"START" if r["is_starter"] else bench_labels[pid]}</span>{move_mark}</td>'
+            f'<td style="padding:6px 8px; opacity:0.75;">{"XI" if r["current_starter"] else "Bench"}</td>'
+            f'<td style="padding:6px 8px; font-weight:600; white-space:nowrap;">{html.escape(r["web_name"])}{role}{_doubtful_badge(r)}</td>'
+            f'<td style="padding:6px 8px;">{html.escape(r["team_short"])}</td>'
+            f'<td style="padding:6px 8px;">{r["position"]}</td>'
+            f'<td style="padding:6px 8px;">{_fixture_chips_html(r["team"])}</td>'
+            f'<td style="padding:6px 8px; text-align:right; font-weight:700;">{r["projected_pts"]:.1f}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["projected_pts_window"]:.1f}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["mins_per_game"]:.0f}</td>'
+            "</tr>"
+        )
+    st.markdown(
+        '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+        f"<thead><tr>{header}</tr></thead><tbody>{''.join(rows_html)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"GW{gw} Pts is the Next GW projection from the model above (GW{gw} only, doubles and blanks counted), "
+        "scaled by each player's chance of playing (injury news) and by rotation risk (mins/game ÷ 75, capped "
+        f"at 1). Next {num_gw} GW Pts is the same model summed over the look-ahead window set by the slider above. "
+        "The suggested XI, captain and vice are picked by the same optimizer as the squad builder below, "
+        "within FPL's formation rules. Your squad is as of the last deadline — transfers made since then aren't "
+        "visible to FPL's public data, so re-check if you've changed your team."
+    )
+    st.divider()
+    _render_transfer_planner(squad_rows, my_team_id)
+
+
+_render_my_squad_advice()
+
+gk_pool = _defensive_section("GKP", "Goalkeepers", "🥅", n=10)
+def_pool = _defensive_section("DEF", "Defenders", "🛡️")
+mid_pool = _attacking_section("MID", "Midfielders", "🎯")
+fwd_pool = _attacking_section("FWD", "Forwards", "⚡")
 
 
 st.divider()
