@@ -356,13 +356,12 @@ st.caption(
     "the live Overall league standings. A true *average* score across, say, the whole top 100k would mean "
     "pulling every entry up to that rank — thousands of requests, not practical live — so this shows the "
     "cutoff score to just reach that rank instead, which is the number that actually matters. Milestones "
-    "continue in 1m steps past 3m up to your own rank, capped at 6m."
+    "continue in 1m steps past 3m up to just past your own rank."
 )
 RANK_MILESTONES = [1, 100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000, 3_000_000]
-MAX_MILESTONE = 6_000_000
 my_rank_for_milestones = entry["summary_overall_rank"]
 next_m = 4_000_000
-rank_ceiling = min(MAX_MILESTONE, -(-my_rank_for_milestones // 1_000_000) * 1_000_000)
+rank_ceiling = -(-my_rank_for_milestones // 1_000_000) * 1_000_000
 while next_m <= rank_ceiling:
     RANK_MILESTONES.append(next_m)
     next_m += 1_000_000
@@ -398,6 +397,11 @@ if milestone_rows:
         m_df.rename(columns={"Rank": "Rank ≤"}),
         hide_index=True,
         width="stretch",
+        column_config={
+            "Rank ≤": st.column_config.NumberColumn(format="localized"),
+            "Points at Rank": st.column_config.NumberColumn(format="localized"),
+            "Gap": st.column_config.NumberColumn(format="localized"),
+        },
     )
 
 st.subheader("Transfer History")
