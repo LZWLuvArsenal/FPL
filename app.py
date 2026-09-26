@@ -1,8 +1,42 @@
 """Entry point: registers the pages explicitly so the home page can be labelled "Home Page" in the sidebar
 (with automatic pages/ discovery it would be named after this file). url_path keeps the old page URLs."""
+import os
+import sys
+
 import streamlit as st
 
-from src.config import is_owner
+
+def _src_modules() -> list[str]:
+    return [name for name in sys.modules if name == "src" or name.startswith("src.")]
+
+
+def _record_src_mtimes() -> None:
+    """Stamps each newly imported src/ module with its file's mtime, so a later change is detectable."""
+    for name in _src_modules():
+        module = sys.modules[name]
+        path = getattr(module, "__file__", None)
+        if path and os.path.exists(path):
+            module.__dict__.setdefault("_loaded_mtime", os.path.getmtime(path))
+
+
+def _drop_stale_src_modules() -> None:
+    """Streamlit Cloud pulls new commits into the running app without restarting it. Pages re-run
+    fresh, but src/ modules stay as first imported, so a page using something new in src/ fails with
+    ImportError. If any src/ file changed since it was loaded, forget them all so they re-import."""
+    mods = _src_modules()
+    for name in mods:
+        module = sys.modules[name]
+        path = getattr(module, "__file__", None)
+        loaded = module.__dict__.get("_loaded_mtime")
+        if not path or not os.path.exists(path) or (loaded is not None and os.path.getmtime(path) != loaded):
+            for stale in mods:
+                del sys.modules[stale]
+            return
+
+
+_drop_stale_src_modules()
+
+from src.config import is_owner  # noqa: E402
 
 PAGES = [
     st.Page("home.py", title="Home Page", default=True),
@@ -21,4 +55,7 @@ if is_owner():  # the squad tracker is private to the owner, so visitors don't e
     PAGES.append(st.Page("pages/12_Squad_Tracker.py", title="Squad Tracker", url_path="Squad_Tracker"))
 PAGES.append(st.Page("pages/13_How_It_Works.py", title="How It Works", url_path="How_It_Works"))
 
-st.navigation(PAGES).run()
+try:
+    st.navigation(PAGES).run()
+finally:
+    _record_src_mtimes()
