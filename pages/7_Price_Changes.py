@@ -1,23 +1,51 @@
+from datetime import timedelta
+
 import pandas as pd
 import streamlit as st
 
 from src.config import render_sidebar_settings
 from src.fpl_api import get_bootstrap_static, get_entry_picks
-from src.utils import current_event, players_df
+from src.snapshots import previous_snapshot, uk_today
+from src.utils import current_event, players_df, season_name
 
 st.set_page_config(page_title="Price Changes - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
 st.title("Price Changes")
 st.caption(
-    "The API only exposes the latest price movement and the season-to-date change — there's no "
-    "day-by-day history to browse. Today's movers update once daily, typically around 1:30am UK time."
+    "Prices update once daily, around 1:30am UK time. The FPL API only exposes the change since the "
+    "current gameweek's deadline and since the season started, so day-by-day changes come from a "
+    "snapshot of every player's price that this app archives each morning after the update."
 )
 
 bootstrap = get_bootstrap_static()
 df = players_df(bootstrap)
-df["change_today"] = df["cost_change_event"] / 10
+df["change_gw"] = df["cost_change_event"] / 10
 df["change_season"] = df["cost_change_start"] / 10
-df["net_transfers"] = df["transfers_in_event"] - df["transfers_out_event"]
+
+gw = current_event(bootstrap)
+deadline = next((e["deadline_time"] for e in bootstrap["events"] if e["id"] == gw), None)
+today = uk_today()
+baseline = previous_snapshot(season_name(bootstrap))
+
+if baseline:
+    base_day, base = baseline
+    base = base.set_index("id")
+    df["change_today"] = ((df["now_cost"] - df["id"].map(base["now_cost"])) / 10).fillna(0)
+    base_net = base["transfers_in"] - base["transfers_out"]
+    df["net_transfers"] = (df["transfers_in"] - df["transfers_out"] - df["id"].map(base_net)).fillna(0).astype(int)
+    since_label = "yesterday's" if base_day == today - timedelta(days=1) else f"the {base_day:%a %d %b}"
+    transfers_label = f"net transfers since {since_label} snapshot"
+    # FPL moves a player at most once a day, so anyone who changed today is done until tomorrow —
+    # but only if the baseline really is yesterday, otherwise the change could be from an earlier day.
+    if base_day == today - timedelta(days=1):
+        can_move = df["change_today"] == 0
+    else:
+        can_move = pd.Series(True, index=df.index)
+else:
+    df["change_today"] = 0.0
+    df["net_transfers"] = df["transfers_in_event"] - df["transfers_out_event"]
+    transfers_label = "net transfers since the gameweek deadline"
+    can_move = pd.Series(True, index=df.index)
 
 display_cols_map = {
     "web_name": "Name",
@@ -26,6 +54,7 @@ display_cols_map = {
     "price": "Price",
     "selected_by_percent": "Selected %",
     "change_today": "Change Today",
+    "change_gw": "Change This GW",
     "change_season": "Change This Season",
 }
 
@@ -43,31 +72,56 @@ def show_table(data, change_col):
     )
 
 
-tab1, tab2, tab3, tab4 = st.tabs(["Today's Movers", "Season-to-Date", "Likely to Rise/Fall", "My Team"])
-
-with tab1:
-    risers = df[df["change_today"] > 0].sort_values("change_today", ascending=False)
-    fallers = df[df["change_today"] < 0].sort_values("change_today")
+def show_movers(change_col):
+    risers = df[df[change_col] > 0].sort_values(change_col, ascending=False)
+    fallers = df[df[change_col] < 0].sort_values(change_col)
     st.subheader(f"Risers ({len(risers)})")
-    show_table(risers, "change_today")
+    show_table(risers, change_col)
     st.subheader(f"Fallers ({len(fallers)})")
-    show_table(fallers, "change_today")
+    show_table(fallers, change_col)
 
-with tab2:
+
+tab_today, tab_gw, tab_season, tab_likely, tab_mine = st.tabs(
+    ["Today", "This Gameweek", "Season-to-Date", "Likely to Rise/Fall", "My Team"]
+)
+
+with tab_today:
+    if not baseline:
+        st.info(
+            "No earlier daily snapshot yet — today's movers will appear once there's one from a "
+            "previous day to compare against. Until then, see This Gameweek."
+        )
+    else:
+        if base_day == today - timedelta(days=1):
+            st.caption(f"Live prices vs yesterday's snapshot ({base_day:%a %d %b}), taken after that day's update.")
+        else:
+            st.caption(
+                f"No snapshot for yesterday, so this compares against the most recent one "
+                f"({base_day:%a %d %b}) and may include more than one day's changes."
+            )
+        show_movers("change_today")
+
+with tab_gw:
+    if deadline:
+        since = pd.Timestamp(deadline).strftime("%a %d %b")
+        st.caption(f"Every price change since the GW{gw} deadline ({since}), not just today's.")
+    show_movers("change_gw")
+
+with tab_season:
     moved = df[df["change_season"] != 0].sort_values("change_season", ascending=False)
     st.caption(f"{len(moved)} players have moved in price since the season started")
     show_table(moved, "change_season")
 
-with tab3:
+with tab_likely:
     st.caption(
         "FPL doesn't publish its price-change algorithm or thresholds, so this is a heuristic, not a "
-        "guarantee: it ranks players by today's net transfers (in minus out), which is the same signal "
-        "third-party FPL price trackers use. Players who already moved today are excluded since they've "
-        "already triggered their change for this cycle."
+        f"guarantee: it ranks players by {transfers_label}, the same signal third-party FPL price "
+        "trackers use. Players who already changed price today are left out — FPL moves a player at "
+        "most once a day."
     )
-    unmoved = df[df["change_today"] == 0]
-    likely_rise = unmoved[unmoved["net_transfers"] > 0].sort_values("net_transfers", ascending=False).head(15)
-    likely_fall = unmoved[unmoved["net_transfers"] < 0].sort_values("net_transfers").head(15)
+    candidates = df[can_move]
+    likely_rise = candidates[candidates["net_transfers"] > 0].sort_values("net_transfers", ascending=False).head(15)
+    likely_fall = candidates[candidates["net_transfers"] < 0].sort_values("net_transfers").head(15)
 
     def show_transfer_table(data):
         st.dataframe(
@@ -87,7 +141,7 @@ with tab3:
     st.subheader("📉 Likely to Fall")
     show_transfer_table(likely_fall)
 
-with tab4:
+with tab_mine:
     team_id = st.session_state.get("team_id")
     if not team_id:
         st.info("Enter your Team ID in the sidebar to see your squad's price risk at a glance.")
@@ -98,7 +152,6 @@ with tab4:
             st.error("Team ID must be a number.")
             st.stop()
 
-        gw = current_event(bootstrap)
         try:
             picks = get_entry_picks(team_id, gw)
         except Exception:
@@ -108,16 +161,16 @@ with tab4:
             st.warning(f"Couldn't load your squad for GW{gw}.")
         else:
             st.caption(
-                "Rank is among all not-yet-moved players league-wide, by today's net transfers. Top 30 "
-                "bought/sold is a rough zone where a change becomes plausible — not a guarantee."
+                f"Rank is among all players league-wide who can still move today, by {transfers_label}. "
+                "Top 30 bought/sold is a rough zone where a change becomes plausible — not a guarantee."
             )
             squad_ids = {p["element"] for p in picks["picks"]}
             squad_df = df[df["id"].isin(squad_ids)].copy()
 
-            unmoved = df[df["change_today"] == 0]
-            rise_rank = unmoved.sort_values("net_transfers", ascending=False)["id"].reset_index(drop=True)
+            candidates = df[can_move]
+            rise_rank = candidates.sort_values("net_transfers", ascending=False)["id"].reset_index(drop=True)
             rise_rank = pd.Series(rise_rank.index + 1, index=rise_rank.values)
-            fall_rank = unmoved.sort_values("net_transfers")["id"].reset_index(drop=True)
+            fall_rank = candidates.sort_values("net_transfers")["id"].reset_index(drop=True)
             fall_rank = pd.Series(fall_rank.index + 1, index=fall_rank.values)
 
             def classify(row):
@@ -138,12 +191,13 @@ with tab4:
 
             st.dataframe(
                 squad_df[
-                    ["web_name", "team_name", "position", "price", "change_season", "net_transfers", "Risk"]
+                    ["web_name", "team_name", "position", "price", "change_gw", "change_season", "net_transfers", "Risk"]
                 ].rename(columns=display_cols_map),
                 hide_index=True,
                 width="stretch",
                 column_config={
                     "Price": st.column_config.NumberColumn(format="£%.1f"),
+                    "Change This GW": st.column_config.NumberColumn(format="£%+.1f"),
                     "Change This Season": st.column_config.NumberColumn(format="£%+.1f"),
                     "net_transfers": st.column_config.NumberColumn("Net Transfers", format="%+,d"),
                 },

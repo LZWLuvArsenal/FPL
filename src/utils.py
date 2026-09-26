@@ -44,6 +44,12 @@ def teams_df(bootstrap: dict) -> pd.DataFrame:
     return pd.DataFrame(bootstrap["teams"])
 
 
+def season_name(bootstrap: dict) -> str:
+    """'2026-27' style label, from the year of the GW1 deadline."""
+    year = int(bootstrap["events"][0]["deadline_time"][:4])
+    return f"{year}-{(year + 1) % 100:02d}"
+
+
 def current_event(bootstrap: dict) -> int:
     events = bootstrap["events"]
     for e in events:
