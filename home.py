@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -31,7 +32,16 @@ if next_id:
     deadline = datetime.fromisoformat(next_gw["deadline_time"].replace("Z", "+00:00"))
     remaining = deadline - datetime.now(timezone.utc)
     days, hours = remaining.days, remaining.seconds // 3600
-    col3.metric(f"{next_gw['name']} Deadline (UTC)", deadline.strftime("%a %d %b, %H:%M"), f"{days}d {hours}h left")
+    try:  # show the deadline in the viewer's browser timezone, falling back to UTC
+        local_deadline = deadline.astimezone(ZoneInfo(st.context.timezone))
+    except Exception:
+        local_deadline = deadline
+    tz_label = local_deadline.tzname() or "UTC"
+    if tz_label[0] in "+-":  # zones without an abbreviation report "+08" — show that as "UTC+08"
+        tz_label = f"UTC{tz_label}"
+    col3.metric(
+        f"{next_gw['name']} Deadline ({tz_label})", local_deadline.strftime("%a %d %b, %H:%M"), f"{days}d {hours}h left"
+    )
 else:
     col3.metric("Next Deadline", "Season complete")
 

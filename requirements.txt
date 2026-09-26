@@ -2,4 +2,4 @@ streamlit>=1.38
 requests>=2.32
 pandas>=2.2
 plotly>=5.24
-pulp>=2.8
+pulp>=2.8,<4  # 4.0 dropped LpVariable(cat=...)
