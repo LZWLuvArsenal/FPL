@@ -587,12 +587,14 @@ def _estimate_free_transfers(team_id):
 TRANSFER_BENCH_WEIGHT = 0.1
 TRANSFER_POOL_PER_POS = 40
 TRANSFER_MIN_GAIN = 1.0
+TRANSFER_MAX = 5
 
 
-def _solve_transfers(pool, squad_ids, squad_budget, n_transfers):
+def _solve_transfers(pool, squad_ids, squad_budget, n_transfers, keep_ids=()):
     """Best squad reachable from the current one with exactly `n_transfers` changes, maximizing the
     window's best XI + captain, with the bench counted at a small weight so bench upgrades aren't free.
-    Same squad rules as the builder below. Returns the new squad's ids, or None if infeasible."""
+    `keep_ids` can't be sold. Same squad rules as the builder below. Returns the new squad's ids, or None
+    if infeasible."""
     ids = list(pool.index)
     pts, pos = pool["_win"].to_dict(), pool["position"].to_dict()
     price, club = pool["price"].to_dict(), pool["team"].to_dict()
@@ -616,6 +618,8 @@ def _solve_transfers(pool, squad_ids, squad_budget, n_transfers):
         prob += pulp.lpSum(pick[i] for i in ids if club[i] == club_id) <= 3
     prob += pulp.lpSum(price[i] * pick[i] for i in ids) <= squad_budget + 1e-6
     prob += pulp.lpSum(pick[i] for i in squad_ids) == 15 - n_transfers
+    for i in keep_ids:
+        prob += pick[i] == 1
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
     if pulp.LpStatus[prob.status] != "Optimal":
         return None
@@ -650,17 +654,23 @@ def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, 
     if bank is None:
         st.caption("Couldn't load your bank balance, so transfer suggestions are unavailable right now.")
         return
+    allow_gk = st.checkbox(
+        "Include goalkeeper transfers", value=False, key="tp_allow_gk",
+        help="Off by default: keepers have a low points ceiling, so a keeper transfer is rarely the best use "
+        "of one. With this off, your keepers stay and the solver finds the best outfield moves instead.",
+    )
     squad_ids = list(squad_rows.index)
+    keep_ids = [] if allow_gk else [i for i in squad_ids if squad_rows.loc[i, "position"] == "GKP"]
     budget = bank + all_players.loc[squad_ids, "price"].sum()
-    key = ("suggest", gw, num_gw, form_window, tuple(sorted(squad_ids)), round(bank, 1))
+    key = ("suggest", gw, num_gw, form_window, tuple(sorted(squad_ids)), round(bank, 1), allow_gk)
     if st.session_state.get("_suggest_key") != key:
         available = all_players[~all_players["status"].isin(["i", "s", "u", "n"]) & (all_players["_win"] > 0)]
         top = available.sort_values("_win", ascending=False).groupby("position").head(TRANSFER_POOL_PER_POS)
         pool = all_players.loc[list(dict.fromkeys(list(top.index) + squad_ids))]
         before, _, _ = _best_xi_total(squad_rows, "projected_pts_window")
         options = []
-        for k in range(1, 4):
-            new_ids = _solve_transfers(pool, squad_ids, budget, k)
+        for k in range(1, TRANSFER_MAX + 1):
+            new_ids = _solve_transfers(pool, squad_ids, budget, k, keep_ids)
             if new_ids is None:
                 continue
             sells = [i for i in squad_ids if i not in new_ids]
@@ -694,13 +704,14 @@ def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, 
 
     head = "".join(
         f'<th style="text-align:{a}; padding:6px 8px; font-size:0.78rem; opacity:0.7; white-space:nowrap;">{l}</th>'
-        for l, a in [("Transfers", "left"), ("Out → In", "left"), ("Gain", "right"), ("Hit", "right"), ("Net", "right")]
+        for l, a in [("Transfers", "left"), ("Net", "right"), ("Gain", "right"), ("Hit", "right"), ("Out → In", "left")]
     )
     rows_html = []
     for o in options:
         moves = "<br>".join(
-            f'⬇️ {html.escape(all_players.loc[s, "web_name"])} <span style="opacity:0.6;">£{all_players.loc[s, "price"]:.1f}</span>'
-            f' → ⬆️ <b>{html.escape(all_players.loc[b, "web_name"])}</b> <span style="opacity:0.6;">'
+            f'<span style="color:#ff4b6e; font-weight:700;">▼</span> {html.escape(all_players.loc[s, "web_name"])} '
+            f'<span style="opacity:0.6;">£{all_players.loc[s, "price"]:.1f}</span> → '
+            f'<span style="color:#00d97e; font-weight:700;">▲</span> <b>{html.escape(all_players.loc[b, "web_name"])}</b> <span style="opacity:0.6;">'
             f'({all_players.loc[b, "team_short"]}, £{all_players.loc[b, "price"]:.1f})</span>{_doubtful_badge(all_players.loc[b])}'
             for s, b in o["pairs"]
         )
@@ -709,10 +720,10 @@ def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, 
         rows_html.append(
             f'<tr style="border-top:1px solid rgba(128,128,128,0.15); {highlight}">'
             f'<td style="padding:6px 8px; white-space:nowrap;">{o["k"]}</td>'
-            f'<td style="padding:6px 8px;">{moves}</td>'
+            f'<td style="padding:6px 8px; text-align:right; font-weight:700;">{o["net"]:+.1f}</td>'
             f'<td style="padding:6px 8px; text-align:right;">{o["gain"]:+.1f}</td>'
             f'<td style="padding:6px 8px; text-align:right;">{hit_cell}</td>'
-            f'<td style="padding:6px 8px; text-align:right; font-weight:700;">{o["net"]:+.1f}</td>'
+            f'<td style="padding:6px 8px; white-space:nowrap;">{moves}</td>'
             "</tr>"
         )
     st.markdown(
@@ -731,7 +742,7 @@ def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, 
     cols = st.columns(len(options))
     for col, o in zip(cols, options):
         col.button(
-            f"Load {o['k']}-transfer plan into planner", key=f"tp_load_{o['k']}",
+            f"Load {o['k']}-transfer plan", key=f"tp_load_{o['k']}",
             on_click=_load, args=(o["pairs"],), width="stretch",
         )
     ft_note = (
@@ -739,7 +750,7 @@ def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, 
         if est_ft is not None else "free transfers as entered below"
     )
     st.caption(
-        f"For 1, 2 and 3 transfers, the solver searches every affordable combination (your bank + the current "
+        f"For 1 to {TRANSFER_MAX} transfers{'' if allow_gk else ' (keepers kept)'}, the solver searches every affordable combination (your bank + the current "
         f"price of whoever you sell, max 3 per club) for the squad with the best XI + captain over {span}, "
         f"using the same projections as the table above. Gain is measured the same way as the planner below; "
         f"hits assume {ft_note}. Selling prices use current prices — FPL's real selling price (half of any "
