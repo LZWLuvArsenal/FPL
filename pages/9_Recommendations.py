@@ -8,7 +8,14 @@ import pulp
 import streamlit as st
 
 from src.config import is_owner, render_sidebar_settings
-from src.fpl_api import get_bootstrap_static, get_entry, get_entry_picks, get_event_live, get_fixtures
+from src.fpl_api import (
+    get_bootstrap_static,
+    get_entry,
+    get_entry_history,
+    get_entry_picks,
+    get_event_live,
+    get_fixtures,
+)
 from src.tracker import add_snapshot
 from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df, teams_df
 
@@ -557,37 +564,201 @@ def _best_xi_total(df, column):
     return xi["projected_pts"].sum() + best.loc[captain_id, "projected_pts"], best, captain_id
 
 
+def _estimate_free_transfers(team_id):
+    """Free transfers banked for the next deadline, replayed from the entry's gameweek history: +1 after
+    each gameweek (max 5), minus transfers made; Wildcard / Free Hit weeks leave the bank untouched.
+    None if the history can't be loaded. Doesn't know about one-off top-ups FPL sometimes grants."""
+    try:
+        history = get_entry_history(int(team_id))
+    except Exception:
+        return None
+    rows = history.get("current") or []
+    if not rows:
+        return 1
+    chip_weeks = {c["event"] for c in history.get("chips", []) if c["name"] in ("wildcard", "freehit")}
+    ft = 1  # after the entry's first gameweek (squad-building transfers there are free)
+    for row in rows[1:]:
+        if row["event"] not in chip_weeks:
+            ft = max(0, ft - row["event_transfers"])
+        ft = min(5, ft + 1)
+    return ft
+
+
+TRANSFER_BENCH_WEIGHT = 0.1
+TRANSFER_POOL_PER_POS = 40
+TRANSFER_MIN_GAIN = 1.0
+
+
+def _solve_transfers(pool, squad_ids, squad_budget, n_transfers):
+    """Best squad reachable from the current one with exactly `n_transfers` changes, maximizing the
+    window's best XI + captain, with the bench counted at a small weight so bench upgrades aren't free.
+    Same squad rules as the builder below. Returns the new squad's ids, or None if infeasible."""
+    ids = list(pool.index)
+    pts, pos = pool["_win"].to_dict(), pool["position"].to_dict()
+    price, club = pool["price"].to_dict(), pool["team"].to_dict()
+    prob = pulp.LpProblem("transfers", pulp.LpMaximize)
+    pick = {i: pulp.LpVariable(f"pick_{i}", cat="Binary") for i in ids}
+    start = {i: pulp.LpVariable(f"start_{i}", cat="Binary") for i in ids}
+    cap = {i: pulp.LpVariable(f"cap_{i}", cat="Binary") for i in ids}
+    prob += pulp.lpSum(
+        pts[i] * (start[i] + cap[i] + TRANSFER_BENCH_WEIGHT * (pick[i] - start[i])) for i in ids
+    )
+    for i in ids:
+        prob += start[i] <= pick[i]
+        prob += cap[i] <= start[i]
+    prob += pulp.lpSum(cap.values()) == 1
+    prob += pulp.lpSum(start.values()) == 11
+    for p, count, lo, hi in [("GKP", 2, 1, 1), ("DEF", 5, 3, 5), ("MID", 5, 2, 5), ("FWD", 3, 1, 3)]:
+        prob += pulp.lpSum(pick[i] for i in ids if pos[i] == p) == count
+        prob += pulp.lpSum(start[i] for i in ids if pos[i] == p) >= lo
+        prob += pulp.lpSum(start[i] for i in ids if pos[i] == p) <= hi
+    for club_id in set(club.values()):
+        prob += pulp.lpSum(pick[i] for i in ids if club[i] == club_id) <= 3
+    prob += pulp.lpSum(price[i] * pick[i] for i in ids) <= squad_budget + 1e-6
+    prob += pulp.lpSum(pick[i] for i in squad_ids) == 15 - n_transfers
+    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    if pulp.LpStatus[prob.status] != "Optimal":
+        return None
+    return [i for i in ids if pick[i].value() > 0.5]
+
+
+def _pair_moves(sells, buys, all_players):
+    """Pairs each outgoing player with an incoming one of the same position (the solver keeps
+    position counts fixed, so a pairing always exists)."""
+    buys_left = list(buys)
+    pairs = []
+    for s in sorted(sells, key=lambda s: -all_players.loc[s, "price"]):
+        b = next(b for b in buys_left if all_players.loc[b, "position"] == all_players.loc[s, "position"])
+        buys_left.remove(b)
+        pairs.append((s, b))
+    return pairs
+
+
+def _sell_label(r):
+    return f"{r['web_name']} ({r['position']}, {r['team_short']}, £{r['price']:.1f})"
+
+
+def _buy_label(r):
+    return (
+        f"{'🚫 ' if r['status'] in ('i', 's', 'u') else ''}{r['web_name']} ({r['team_short']}, £{r['price']:.1f})"
+        f" — GW{gw} {r['_exp']:.1f} · next {num_gw} GW {r['_win']:.1f}"
+    )
+
+
+def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, est_ft):
+    st.markdown("#### 🤖 Suggested transfers")
+    if bank is None:
+        st.caption("Couldn't load your bank balance, so transfer suggestions are unavailable right now.")
+        return
+    squad_ids = list(squad_rows.index)
+    budget = bank + all_players.loc[squad_ids, "price"].sum()
+    key = ("suggest", gw, num_gw, form_window, tuple(sorted(squad_ids)), round(bank, 1))
+    if st.session_state.get("_suggest_key") != key:
+        available = all_players[~all_players["status"].isin(["i", "s", "u", "n"]) & (all_players["_win"] > 0)]
+        top = available.sort_values("_win", ascending=False).groupby("position").head(TRANSFER_POOL_PER_POS)
+        pool = all_players.loc[list(dict.fromkeys(list(top.index) + squad_ids))]
+        before, _, _ = _best_xi_total(squad_rows, "projected_pts_window")
+        options = []
+        for k in range(1, 4):
+            new_ids = _solve_transfers(pool, squad_ids, budget, k)
+            if new_ids is None:
+                continue
+            sells = [i for i in squad_ids if i not in new_ids]
+            buys = [i for i in new_ids if i not in squad_ids]
+            after = all_players.loc[new_ids].assign(projected_pts_window=lambda d: d["_win"])
+            after_total, _, _ = _best_xi_total(after, "projected_pts_window")
+            options.append({"k": k, "pairs": _pair_moves(sells, buys, all_players), "gain": after_total - before})
+        st.session_state["_suggest_key"] = key
+        st.session_state["_suggest_options"] = options
+    options = st.session_state["_suggest_options"]
+    if not options:
+        st.caption("The solver couldn't find a valid set of transfers within your budget.")
+        return
+
+    for o in options:
+        o["hit"] = 4 * max(0, o["k"] - int(free_transfers))
+        o["net"] = o["gain"] - o["hit"]
+    best = max(options, key=lambda o: o["net"])
+    span = f"the next {num_gw} GW{'s' if num_gw > 1 else ''}"
+    if best["net"] < TRANSFER_MIN_GAIN:
+        st.info(
+            f"🧊 **Hold / roll your transfer.** The best move found is worth only {best['net']:+.1f} pts over "
+            f"{span} after hits — inside the model's noise."
+        )
+    else:
+        n = best["k"]
+        hit_text = f" after the −{best['hit']} hit" if best["hit"] else ""
+        st.success(
+            f"✅ **Best: {n} transfer{'s' if n > 1 else ''}** — about {best['net']:+.1f} pts over {span}{hit_text}."
+        )
+
+    head = "".join(
+        f'<th style="text-align:{a}; padding:6px 8px; font-size:0.78rem; opacity:0.7; white-space:nowrap;">{l}</th>'
+        for l, a in [("Transfers", "left"), ("Out → In", "left"), ("Gain", "right"), ("Hit", "right"), ("Net", "right")]
+    )
+    rows_html = []
+    for o in options:
+        moves = "<br>".join(
+            f'⬇️ {html.escape(all_players.loc[s, "web_name"])} <span style="opacity:0.6;">£{all_players.loc[s, "price"]:.1f}</span>'
+            f' → ⬆️ <b>{html.escape(all_players.loc[b, "web_name"])}</b> <span style="opacity:0.6;">'
+            f'({all_players.loc[b, "team_short"]}, £{all_players.loc[b, "price"]:.1f})</span>{_doubtful_badge(all_players.loc[b])}'
+            for s, b in o["pairs"]
+        )
+        highlight = "background:rgba(0,255,135,0.12);" if o is best and best["net"] >= TRANSFER_MIN_GAIN else ""
+        hit_cell = f"−{o['hit']}" if o["hit"] else "—"
+        rows_html.append(
+            f'<tr style="border-top:1px solid rgba(128,128,128,0.15); {highlight}">'
+            f'<td style="padding:6px 8px; white-space:nowrap;">{o["k"]}</td>'
+            f'<td style="padding:6px 8px;">{moves}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{o["gain"]:+.1f}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{hit_cell}</td>'
+            f'<td style="padding:6px 8px; text-align:right; font-weight:700;">{o["net"]:+.1f}</td>'
+            "</tr>"
+        )
+    st.markdown(
+        '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+        f"<thead><tr>{head}</tr></thead><tbody>{''.join(rows_html)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+    def _load(pairs):
+        st.session_state["tp_n"] = len(pairs)
+        st.session_state["tp_chip"] = "None"
+        for i, (s, b) in enumerate(pairs):
+            st.session_state[f"tp_sell_{i}"] = _sell_label(squad_rows.loc[s])
+            st.session_state[f"tp_buy_{i}"] = _buy_label(all_players.loc[b])
+
+    cols = st.columns(len(options))
+    for col, o in zip(cols, options):
+        col.button(
+            f"Load {o['k']}-transfer plan into planner", key=f"tp_load_{o['k']}",
+            on_click=_load, args=(o["pairs"],), width="stretch",
+        )
+    ft_note = (
+        f"{est_ft} free transfer{'s' if est_ft != 1 else ''} estimated from your transfer history"
+        if est_ft is not None else "free transfers as entered below"
+    )
+    st.caption(
+        f"For 1, 2 and 3 transfers, the solver searches every affordable combination (your bank + the current "
+        f"price of whoever you sell, max 3 per club) for the squad with the best XI + captain over {span}, "
+        f"using the same projections as the table above. Gain is measured the same way as the planner below; "
+        f"hits assume {ft_note}. Selling prices use current prices — FPL's real selling price (half of any "
+        f"rise) isn't public, so check your budget in the app. Suggestions under {TRANSFER_MIN_GAIN:+.0f} pt "
+        "net are treated as noise."
+    )
+
+
 @st.fragment
 def _render_transfer_planner(squad_rows, my_team_id):
-    """Before/after comparison for up to 3 planned transfers. A fragment, so changing a dropdown only
-    reruns this block instead of the whole page."""
-    st.markdown("#### 🔁 Plan a transfer — compare before / after")
-    st.caption(
-        "Pick who you'd sell and who you'd buy (same position). Both sides are compared using their best "
-        "possible XI, so the change shown is what the transfer is really worth."
-    )
+    """Suggested transfers plus a before/after comparison for planned ones. A fragment, so changing a
+    dropdown only reruns this block instead of the whole page."""
     bank = None
     try:
         bank = get_entry(int(my_team_id))["last_deadline_bank"] / 10
     except Exception:
         pass
+    est_ft = _estimate_free_transfers(my_team_id)
 
-    ctrl1, ctrl2, ctrl3 = st.columns(3)
-    n_transfers = int(ctrl1.number_input("Number of transfers", min_value=1, max_value=15, value=1, key="tp_n"))
-    chip = ctrl2.selectbox(
-        "Chip", ["None", "Wildcard / Free Hit"], key="tp_chip",
-        help="Both chips give unlimited free transfers, so no points hit is applied.",
-    )
-    free_transfers = ctrl3.number_input(
-        "Free transfers you have", min_value=0, max_value=5, value=1, key="tp_ft", disabled=chip != "None"
-    )
-
-    position_order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
-    sellable = squad_rows.assign(_o=squad_rows["position"].map(position_order)).sort_values(["_o", "web_name"])
-    sell_labels = {
-        f"{r['web_name']} ({r['position']}, {r['team_short']}, £{r['price']:.1f})": pid for pid, r in sellable.iterrows()
-    }
-    squad_ids = set(squad_rows.index)
     cache_key = ("planner_proj", gw, num_gw, form_window, len(players))
     if st.session_state.get("_planner_cache_key") != cache_key:
         projected = players.set_index("id")
@@ -598,6 +769,36 @@ def _render_transfer_planner(squad_rows, my_team_id):
         st.session_state["_planner_cache"] = projected
         st.session_state["_planner_cache_key"] = cache_key
     all_players = st.session_state["_planner_cache"]
+
+    suggestions = st.container()
+
+    st.markdown("#### 🔁 Plan a transfer — compare before / after")
+    st.caption(
+        "Pick who you'd sell and who you'd buy (same position). Both sides are compared using their best "
+        "possible XI, so the change shown is what the transfer is really worth."
+    )
+    # Defaults go through session state (not value=) because "Load plan" buttons also write these keys.
+    st.session_state.setdefault("tp_n", 1)
+    st.session_state.setdefault("tp_chip", "None")
+    st.session_state.setdefault("tp_ft", 1 if est_ft is None else est_ft)
+    ctrl1, ctrl2, ctrl3 = st.columns(3)
+    n_transfers = int(ctrl1.number_input("Number of transfers", min_value=1, max_value=15, key="tp_n"))
+    chip = ctrl2.selectbox(
+        "Chip", ["None", "Wildcard / Free Hit"], key="tp_chip",
+        help="Both chips give unlimited free transfers, so no points hit is applied.",
+    )
+    free_transfers = ctrl3.number_input(
+        "Free transfers you have", min_value=0, max_value=5, key="tp_ft", disabled=chip != "None",
+        help=None if est_ft is None else f"Pre-filled with {est_ft}, estimated from your transfer history.",
+    )
+    with suggestions:
+        _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, est_ft)
+        st.divider()
+
+    position_order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+    sellable = squad_rows.assign(_o=squad_rows["position"].map(position_order)).sort_values(["_o", "web_name"])
+    sell_labels = {_sell_label(r): pid for pid, r in sellable.iterrows()}
+    squad_ids = set(squad_rows.index)
 
     sells, buys = [], []
     for i in range(n_transfers):
@@ -611,10 +812,7 @@ def _render_transfer_planner(squad_rows, my_team_id):
         pos = squad_rows.loc[sell_id, "position"]
         pool = all_players[(all_players["position"] == pos) & ~all_players.index.isin(squad_ids | set(buys))]
         pool = pool.sort_values("_exp", ascending=False)
-        buy_labels = {
-            f"{'🚫 ' if r['status'] in ('i', 's', 'u') else ''}{r['web_name']} ({r['team_short']}, £{r['price']:.1f}) — GW{gw} {r['_exp']:.1f} · next {num_gw} GW {r['_win']:.1f}": pid
-            for pid, r in pool.iterrows()
-        }
+        buy_labels = {_buy_label(r): pid for pid, r in pool.iterrows()}
         buy_choice = right.selectbox(
             f"Transfer {i + 1}: buy ({pos}, best Next GW first)", ["— choose —"] + list(buy_labels), key=f"tp_buy_{i}"
         )

@@ -1,3 +1,6 @@
+import html
+from itertools import combinations
+
 import pandas as pd
 import streamlit as st
 
@@ -150,7 +153,79 @@ def all_games(team_id):
     return [g for gw in gw_range for g in team_games[team_id][gw]]
 
 
-tab_names = ["Fixture difficulty"] + (["Projected xG", "Clean sheet odds"] if has_projections else [])
+def render_rotation_pairs():
+    """Ranks every pair of teams by how well they cover each other: each gameweek you'd start whichever
+    of the two has the better projection, so the pair's value is the sum of the weekly best."""
+    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([2, 2, 2, 1])
+    mode = ctrl1.radio("Rotate for", ["Clean sheets (GKP / DEF)", "Goals (MID / FWD)"], key="rot_mode")
+    stat, unit = ("cs", "Exp. clean sheets") if mode.startswith("Clean") else ("xg", "Proj xG")
+    rank_by = ctrl2.radio("Rank by", ["Pair total", "Rotation gain (vs. best alone)"], key="rot_rank")
+    by_name = {name: tid for tid, name in team_names.items()}
+    must = ctrl3.selectbox("Must include", ["Any team"] + sorted(by_name), key="rot_team")
+    top_n = int(ctrl4.number_input("Pairs shown", min_value=3, max_value=30, value=10, key="rot_n"))
+
+    # Per team and gameweek: summed over the week's games (a double counts both, a blank is 0).
+    value = {t: [sum(g[stat] for g in team_games[t][gw]) for gw in gw_range] for t in team_names}
+    pairs = []
+    for a, b in combinations(team_names, 2):
+        if must != "Any team" and by_name[must] not in (a, b):
+            continue
+        weekly = [max(va, vb) for va, vb in zip(value[a], value[b])]
+        total = sum(weekly)
+        pairs.append({"a": a, "b": b, "total": total, "gain": total - max(sum(value[a]), sum(value[b]))})
+    sort_key = "total" if rank_by == "Pair total" else "gain"
+    pairs.sort(key=lambda p: (-p[sort_key], -p["total"]))
+
+    all_values = pd.Series([v for t in team_names for v, gw in zip(value[t], gw_range) if team_games[t][gw]])
+    cell_css = "padding:4px 6px; text-align:center; white-space:nowrap; font-size:0.78rem; font-weight:600;"
+    head = "".join(f'<th style="{cell_css} opacity:0.7;">{c}</th>' for c in ["#", "Team", unit, "vs. best alone"] + gw_cols)
+    rows = []
+    for rank, p in enumerate(pairs[:top_n], start=1):
+        a, b = p["a"], p["b"]
+        for side, (team, other) in enumerate([(a, b), (b, a)]):
+            cells = []
+            for i, gw in enumerate(gw_range):
+                games = team_games[team][gw]
+                if not games:
+                    cells.append(f'<td style="{cell_css} opacity:0.35;">-</td>')
+                    continue
+                picked = value[team][i] > value[other][i] or (value[team][i] == value[other][i] and team == a)
+                style = quintile_color(value[team][i], all_values).replace("background-color", "background")
+                text = "<br>".join(html.escape(_venue(g)) for g in games)
+                look = "outline:2px solid rgba(0,0,0,0.55); outline-offset:-2px;" if picked else "opacity:0.3;"
+                cells.append(f'<td style="{cell_css} {style}; {look}">{text}</td>')
+            border = "border-top:6px solid transparent;" if side == 0 else ""
+            lead = (
+                f'<td rowspan="2" style="{cell_css} opacity:0.7;">{rank}</td>' if side == 0 else ""
+            )
+            summary = (
+                f'<td rowspan="2" style="{cell_css}">{p["total"]:.1f}</td>'
+                f'<td rowspan="2" style="{cell_css} opacity:0.75;">+{p["gain"]:.1f}</td>'
+                if side == 0 else ""
+            )
+            rows.append(
+                f'<tr style="{border}">{lead}<td style="{cell_css} text-align:left;">{html.escape(team_names[team])}</td>'
+                f"{summary}{''.join(cells)}</tr>"
+            )
+    st.markdown(
+        '<div style="overflow-x:auto;"><table style="border-collapse:separate; border-spacing:2px;">'
+        f"<thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    _legend(QUINTILE_COLORS, ["Top fifth", "2nd", "Middle", "4th", "Bottom fifth"])
+    st.caption(
+        f"Every pair of teams is scored by starting whichever of the two has the better projection each "
+        f"gameweek (outlined; the other is faded) and adding those up — **{unit}** is the pair's total over the "
+        "gameweeks shown, doubles counting both games. **vs. best alone** is how much the rotation adds over "
+        "just starting the better of the two every week — a small number means one team carries the pair "
+        "and rotation isn't really needed. Rank by it to find true rotations (teams whose good runs "
+        "alternate); rank by Pair total for the strongest pair outright. Colours rank each fixture among every fixture in the window, as "
+        "in the other tabs. Use it for two keepers or two budget defenders; set 'Must include' to a team "
+        "you already own to find its best partner."
+    )
+
+
+tab_names = ["Fixture difficulty"] + (["Projected xG", "Clean sheet odds", "Rotation pairs"] if has_projections else [])
 tabs = st.tabs(tab_names)
 
 with tabs[0]:
@@ -207,6 +282,8 @@ if has_projections:
             "Each cell is coloured by how its chance ranks among every cell in the table: the top fifth is "
             "green, the bottom fifth red."
         )
+    with tabs[3]:
+        render_rotation_pairs()
     st.caption(
         "**How the projections work:** built like the Recommendations page's points model — each side's own "
         "xG scored and xG conceded per match over the recent-form window, scaled by how the specific "
