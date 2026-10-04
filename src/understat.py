@@ -94,8 +94,24 @@ def find_player_id(full_name: str, expected_team: str | None = None, web_name: s
     return results[0]["id"]
 
 
+def _own_team(matches: list[dict], i: int, window: int = 3) -> str | None:
+    """Understat's player matches don't say which side the player was on. Their own club is the one
+    that also turns up in the games either side of this one, which holds across transfers too."""
+    m = matches[i]
+    sides = [m.get("h_team"), m.get("a_team")]
+    nearby = matches[max(0, i - window):i] + matches[i + 1:i + 1 + window]
+    counts = [sum(t in (n.get("h_team"), n.get("a_team")) for n in nearby) for t in sides]
+    return sides[0] if counts[0] > counts[1] else sides[1] if counts[1] > counts[0] else None
+
+
 def matches_vs_opponent(matches: list[dict], opponent_name: str) -> list[dict]:
-    return [m for m in matches if opponent_name in (m.get("h_team"), m.get("a_team"))]
+    """Matches *against* the opponent — not ones where the player was playing for them."""
+    ordered = sorted(matches, key=lambda m: m.get("date", ""))
+    return [
+        m
+        for i, m in enumerate(ordered)
+        if opponent_name in (m.get("h_team"), m.get("a_team")) and _own_team(ordered, i) != opponent_name
+    ]
 
 
 def format_season(season: str) -> str:
