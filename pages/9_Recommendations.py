@@ -590,11 +590,11 @@ TRANSFER_MIN_GAIN = 1.0
 TRANSFER_MAX = 5
 
 
-def _solve_transfers(pool, squad_ids, squad_budget, n_transfers, keep_ids=()):
+def _solve_transfers(pool, squad_ids, squad_budget, n_transfers, keep_ids=(), sell_ids=()):
     """Best squad reachable from the current one with exactly `n_transfers` changes, maximizing the
     window's best XI + captain, with the bench counted at a small weight so bench upgrades aren't free.
-    `keep_ids` can't be sold. Same squad rules as the builder below. Returns the new squad's ids, or None
-    if infeasible."""
+    `keep_ids` can't be sold and `sell_ids` must be. Same squad rules as the builder below. Returns the
+    new squad's ids, or None if infeasible."""
     ids = list(pool.index)
     pts, pos = pool["_win"].to_dict(), pool["position"].to_dict()
     price, club = pool["price"].to_dict(), pool["team"].to_dict()
@@ -620,6 +620,8 @@ def _solve_transfers(pool, squad_ids, squad_budget, n_transfers, keep_ids=()):
     prob += pulp.lpSum(pick[i] for i in squad_ids) == 15 - n_transfers
     for i in keep_ids:
         prob += pick[i] == 1
+    for i in sell_ids:
+        prob += pick[i] == 0
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
     if pulp.LpStatus[prob.status] != "Optimal":
         return None
@@ -660,17 +662,31 @@ def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, 
         "of one. With this off, your keepers stay and the solver finds the best outfield moves instead.",
     )
     squad_ids = list(squad_rows.index)
-    keep_ids = [] if allow_gk else [i for i in squad_ids if squad_rows.loc[i, "position"] == "GKP"]
+    unavailable = [i for i in squad_ids if all_players.loc[i, "status"] in ("i", "s", "u", "n", "d")]
+    sell_unavailable = st.checkbox(
+        f"Transfer out injured / doubtful / suspended players first ({len(unavailable)} in your squad)",
+        value=False, key="tp_sell_injured", disabled=not unavailable,
+        help="Forces every injured, doubtful (75% / 50% / 25%), suspended or unavailable player in your squad "
+        "out, then finds the best buys plus any extra moves.",
+    )
+    sell_ids = unavailable if sell_unavailable else []
+    keep_ids = [] if allow_gk else [
+        i for i in squad_ids if squad_rows.loc[i, "position"] == "GKP" and i not in sell_ids
+    ]
     budget = bank + all_players.loc[squad_ids, "price"].sum()
-    key = ("suggest", gw, num_gw, form_window, tuple(sorted(squad_ids)), round(bank, 1), allow_gk)
+    key = (
+        "suggest", gw, num_gw, form_window, tuple(sorted(squad_ids)), round(bank, 1), allow_gk,
+        tuple(sorted(sell_ids)),
+    )
     if st.session_state.get("_suggest_key") != key:
-        available = all_players[~all_players["status"].isin(["i", "s", "u", "n"]) & (all_players["_win"] > 0)]
+        excluded = ["i", "s", "u", "n"] + (["d"] if sell_ids else [])
+        available = all_players[~all_players["status"].isin(excluded) & (all_players["_win"] > 0)]
         top = available.sort_values("_win", ascending=False).groupby("position").head(TRANSFER_POOL_PER_POS)
         pool = all_players.loc[list(dict.fromkeys(list(top.index) + squad_ids))]
         before, _, _ = _best_xi_total(squad_rows, "projected_pts_window")
         options = []
-        for k in range(1, TRANSFER_MAX + 1):
-            new_ids = _solve_transfers(pool, squad_ids, budget, k, keep_ids)
+        for k in range(max(1, len(sell_ids)), max(TRANSFER_MAX, len(sell_ids)) + 1):
+            new_ids = _solve_transfers(pool, squad_ids, budget, k, keep_ids, sell_ids)
             if new_ids is None:
                 continue
             sells = [i for i in squad_ids if i not in new_ids]
@@ -750,7 +766,8 @@ def _render_transfer_suggestions(squad_rows, all_players, bank, free_transfers, 
         if est_ft is not None else "free transfers as entered below"
     )
     st.caption(
-        f"For 1 to {TRANSFER_MAX} transfers{'' if allow_gk else ' (keepers kept)'}, the solver searches every affordable combination (your bank + the current "
+        f"For {max(1, len(sell_ids))} to {max(TRANSFER_MAX, len(sell_ids))} transfers"
+        f"{'' if allow_gk else ' (keepers kept)'}{', flagged players sold first' if sell_ids else ''}, the solver searches every affordable combination (your bank + the current "
         f"price of whoever you sell, max 3 per club) for the squad with the best XI + captain over {span}, "
         f"using the same projections as the table above. Gain is measured the same way as the planner below; "
         f"hits assume {ft_note}. Selling prices use current prices — FPL's real selling price (half of any "
