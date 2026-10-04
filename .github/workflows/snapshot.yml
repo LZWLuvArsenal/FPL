@@ -23,6 +23,9 @@ jobs:
           python-version: "3.12"
       - run: pip install pandas requests
       - run: python scripts/snapshot.py
+      # Once per gameweek (skips files already saved): active-manager sample + top 10k, ~15-25 min of API calls.
+      - run: python scripts/active_ownership.py
+        continue-on-error: true
       - name: Commit data
         run: |
           git config user.name "github-actions[bot]"

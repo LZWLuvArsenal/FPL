@@ -15,7 +15,8 @@ from src.fpl_api import (
     get_league_standings,
 )
 from src.pitch import render_pitch, upcoming_fixture_labels
-from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df
+from src.snapshots import load_group_ownership
+from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df, season_name
 
 OVERALL_LEAGUE_ID = 314
 
@@ -184,6 +185,139 @@ try:
         st.caption("Greyed-out rows are on the bench.")
 except Exception:
     st.warning(f"Picks for GW{event_id} aren't available yet.")
+
+TEMPLATE_OWNED_PCT = 30
+DIFFERENTIAL_OWNED_PCT = 10
+FORMATION_LIMITS = {"DEF": (3, 5), "MID": (2, 5), "FWD": (1, 3)}
+
+
+def ownership_tag(pct):
+    if pct >= TEMPLATE_OWNED_PCT:
+        return "🧱 Template"
+    if pct < DIFFERENTIAL_OWNED_PCT:
+        return "🎯 Differential"
+    return "⚖️ Mid-owned"
+
+
+def template_xi(players):
+    """Most-owned valid XI: top GK, the formation minimums, then the best remaining outfielders
+    up to each position's maximum."""
+    pool = players[players["status"] != "u"].sort_values("own_pct", ascending=False)
+    taken = list(pool[pool["position"] == "GKP"]["id"].head(1))
+    for pos, (lo, _) in FORMATION_LIMITS.items():
+        taken += list(pool[pool["position"] == pos]["id"].head(lo))
+    counts = {pos: lo for pos, (lo, _) in FORMATION_LIMITS.items()}
+    for _, p in pool[pool["position"].isin(FORMATION_LIMITS) & ~pool["id"].isin(taken)].iterrows():
+        if len(taken) == 11:
+            break
+        if counts[p["position"]] < FORMATION_LIMITS[p["position"]][1]:
+            counts[p["position"]] += 1
+            taken.append(p["id"])
+    return pool[pool["id"].isin(taken)]
+
+
+st.subheader("Template or Differential?")
+if picks_df is None:
+    st.caption("Needs this gameweek's squad picks — see the warning above.")
+else:
+    groups = {
+        "Active managers": load_group_ownership(season_name(bootstrap), event_id, "active"),
+        "Top 10k": load_group_ownership(season_name(bootstrap), event_id, "top10k"),
+    }
+    sources = [name for name, data in groups.items() if data] + ["All managers"]
+    source = st.radio("Compare against", sources, horizontal=True)
+    group = groups.get(source)
+    own_players = players.copy()
+    if group:
+        group_df = pd.DataFrame.from_dict(group["players"], orient="index")
+        group_df.index = group_df.index.astype(int)
+        own_players = own_players.join(group_df, on="id")
+        own_players[group_df.columns] = own_players[group_df.columns].fillna(0)
+        # Ranked by how many *start* the player — owned-but-benched players aren't part of anyone's XI.
+        own_players["own_pct"] = own_players["start_pct"]
+    else:
+        own_players["own_pct"] = own_players["selected_by_percent"]
+    has_eo = "eo_pct" in own_players
+
+    starters = picks_df[picks_df["slot"] <= 11].merge(
+        own_players[["id", "own_pct"] + (["eo_pct"] if has_eo else [])], on="id"
+    )
+    # Captain counted twice (×3 for triple captain) — a rough stand-in for effective ownership.
+    weights = starters["multiplier"].clip(lower=1)
+    xi_ownership = (starters["own_pct"] * weights).sum() / weights.sum()
+    if xi_ownership >= 35:
+        xi_rating = "🧱 Template"
+    elif xi_ownership >= 20:
+        xi_rating = "⚖️ Balanced"
+    elif xi_ownership >= DIFFERENTIAL_OWNED_PCT:
+        xi_rating = "🎲 Leaning Differential"
+    else:
+        xi_rating = "🎯 Differential"
+
+    template = template_xi(own_players)
+    overlap = starters["element"].isin(template["id"]).sum()
+    captain = starters[starters["is_captain"]]
+
+    tcol1, tcol2, tcol3, tcol4 = st.columns(4)
+    tcol1.metric("Starting XI Style", xi_rating)
+    tcol2.metric("Avg Started % (XI)" if has_eo else "Avg Ownership (XI)", f"{xi_ownership:.1f}%", help="Captain weighted by their multiplier.")
+    tcol3.metric("Template XI Overlap", f"{overlap}/11", help="Starters who are in the 11 most-owned (or, for active/top 10k, most-started) players, in a valid formation.")
+    if not captain.empty:
+        cap = captain.iloc[0]
+        tcol4.metric("Captain", cap["web_name"], ownership_tag(cap["own_pct"]), delta_color="off")
+
+    own_cols = ["own_pct"] + (["eo_pct"] if has_eo else [])
+    own_labels = {"own_pct": "Started %" if has_eo else "Owned %", "eo_pct": "EO %"}
+    own_format = {label: st.column_config.NumberColumn(format="%.1f%%") for label in own_labels.values()}
+    own_col1, own_col2 = st.columns(2)
+    with own_col1:
+        st.markdown("**Your starters by ownership**")
+        starters["tag"] = starters["own_pct"].apply(ownership_tag)
+        st.dataframe(
+            starters.sort_values("own_pct", ascending=False)[["player", "team_short", "position", *own_cols, "tag"]]
+            .rename(columns={"player": "Player", "team_short": "Team", "position": "Pos", "tag": "Type", **own_labels}),
+            hide_index=True,
+            width="stretch",
+            column_config=own_format,
+        )
+    with own_col2:
+        st.markdown("**Template players you're not starting**")
+        st.caption("If these haul, most managers gain on you.")
+        missing = template[~template["id"].isin(starters["element"])].copy()
+        missing["benched"] = missing["id"].isin(picks_df["element"]).map({True: "On your bench", False: ""})
+        if missing.empty:
+            st.success("You're starting the entire template XI.")
+        else:
+            st.dataframe(
+                missing[["web_name", "team_short", "position", *own_cols, "benched"]].rename(
+                    columns={"web_name": "Player", "team_short": "Team", "position": "Pos", "benched": "", **own_labels}
+                ),
+                hide_index=True,
+                width="stretch",
+                column_config=own_format,
+            )
+    if source == "Active managers":
+        st.caption(
+            f"Estimated from a random sample of {group['active_teams']:,} active managers — teams with at least "
+            f"one transfer or chip in the last {group['active_window']} GWs ({group['active_teams'] / group['existing_teams']:.0%} "
+            f"of the {group['existing_teams']:,} teams sampled), so figures are ±{196 * (0.25 / group['active_teams']) ** 0.5:.0f}pts at most. Ratings use % of active "
+            f"managers *starting* the player; EO also counts captaincy (×2, ×3 triple captain). Template ≥{TEMPLATE_OWNED_PCT}%, differential <{DIFFERENTIAL_OWNED_PCT}%."
+        )
+    elif source == "Top 10k":
+        st.caption(
+            f"Every one of the top {group['teams']:,} managers by overall rank going into GW{event_id}. Ratings "
+            f"use % of them *starting* the player; EO also counts captaincy (×2, ×3 triple captain). "
+            f"Template ≥{TEMPLATE_OWNED_PCT}%, differential <{DIFFERENTIAL_OWNED_PCT}%."
+        )
+    else:
+        st.caption(
+            f"Ownership is FPL's overall 'selected by' figure across all managers, including inactive teams, so "
+            f"it understates how template a player is among active managers. Template ≥{TEMPLATE_OWNED_PCT}%, "
+            f"differential <{DIFFERENTIAL_OWNED_PCT}%."
+        )
+        missing_groups = [name for name, data in groups.items() if not data]
+        if missing_groups:
+            st.caption(f"{' and '.join(missing_groups)} ownership for GW{event_id} hasn't been computed yet.")
 
 st.subheader("Room for Improvement")
 if picks_df is None:
