@@ -3,6 +3,7 @@ import streamlit as st
 
 from src.config import render_sidebar_settings, require_owner
 from src.fpl_api import get_bootstrap_static, get_event_live
+from src.player_dialog import player_dataframe
 from src.tracker import delete_snapshot, load_snapshots
 
 st.set_page_config(page_title="Squad Tracker - FPL Dashboard", page_icon="⚽", layout="wide")
@@ -109,10 +110,12 @@ for snap in sorted(snapshots, key=lambda s: s["saved_at"], reverse=True):
                     lambda r: "Captain" if r["is_captain"] else ("Vice-Captain" if r["is_vice"] else ("Starting" if r["is_starter"] else "Bench")),
                     axis=1,
                 )
-                st.dataframe(
+                player_dataframe(
                     squad_df[["name", "team_short", "position", "Role"]].rename(
                         columns={"name": "Player", "team_short": "Team", "position": "Pos"}
                     ),
+                    squad_df["id"],
+                    key=f"tracker_squad_{snap['id']}",
                     hide_index=True,
                     width="stretch",
                 )

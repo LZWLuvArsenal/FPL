@@ -3,6 +3,7 @@ import streamlit as st
 
 from src.config import render_sidebar_settings
 from src.fpl_api import get_bootstrap_static, get_event_live
+from src.player_dialog import player_dataframe
 from src.utils import players_df
 
 st.set_page_config(page_title="Player Explorer - FPL Dashboard", page_icon="⚽", layout="wide")
@@ -70,8 +71,11 @@ display_cols = [
     "expected_goals_conceded",
     "ict_index",
 ]
-st.caption(f"{len(filtered)} players — xG/xA/xGC are season totals from FPL's underlying stats provider")
-st.dataframe(
+st.caption(
+    f"{len(filtered)} players — xG/xA/xGC are season totals from FPL's underlying stats provider. "
+    "Click a row for the player's match-by-match details."
+)
+player_dataframe(
     filtered[display_cols].rename(
         columns={
             "web_name": "Name",
@@ -92,6 +96,8 @@ st.dataframe(
             "ict_index": "ICT",
         }
     ),
+    filtered["id"],
+    key="explorer_table",
     hide_index=True,
     width="stretch",
     height=650,
@@ -155,7 +161,7 @@ else:
         "and forwards) for 2pts. Hit % = hits ÷ appearances; every appearance counts, including sub cameos. "
         "Uses the Position / Team / Price / Search filters above."
     )
-    st.dataframe(
+    player_dataframe(
         dc[
             [
                 "web_name", "team_name", "position", "price", "apps", "defcon_hits", "hit_pct",
@@ -175,6 +181,8 @@ else:
                 "defensive_contribution_per_90": "Def. Contribution / 90",
             }
         ),
+        dc["id"],
+        key="defcon_table",
         hide_index=True,
         width="stretch",
         height=500,

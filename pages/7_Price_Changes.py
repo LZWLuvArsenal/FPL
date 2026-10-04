@@ -5,6 +5,7 @@ import streamlit as st
 
 from src.config import render_sidebar_settings
 from src.fpl_api import get_bootstrap_static, get_entry_picks
+from src.player_dialog import player_dataframe
 from src.snapshots import previous_snapshot, uk_today
 from src.utils import current_event, players_df, season_name
 
@@ -59,10 +60,12 @@ display_cols_map = {
 }
 
 
-def show_table(data, change_col):
+def show_table(data, change_col, key):
     cols = ["web_name", "team_name", "position", "price", "selected_by_percent", change_col]
-    st.dataframe(
+    player_dataframe(
         data[cols].rename(columns=display_cols_map),
+        data["id"],
+        key=key,
         hide_index=True,
         width="stretch",
         column_config={
@@ -76,9 +79,9 @@ def show_movers(change_col):
     risers = df[df[change_col] > 0].sort_values(change_col, ascending=False)
     fallers = df[df[change_col] < 0].sort_values(change_col)
     st.subheader(f"Risers ({len(risers)})")
-    show_table(risers, change_col)
+    show_table(risers, change_col, f"risers_{change_col}")
     st.subheader(f"Fallers ({len(fallers)})")
-    show_table(fallers, change_col)
+    show_table(fallers, change_col, f"fallers_{change_col}")
 
 
 tab_today, tab_gw, tab_season, tab_likely, tab_mine = st.tabs(
@@ -110,7 +113,7 @@ with tab_gw:
 with tab_season:
     moved = df[df["change_season"] != 0].sort_values("change_season", ascending=False)
     st.caption(f"{len(moved)} players have moved in price since the season started")
-    show_table(moved, "change_season")
+    show_table(moved, "change_season", "moved_season")
 
 with tab_likely:
     st.caption(
@@ -123,11 +126,13 @@ with tab_likely:
     likely_rise = candidates[candidates["net_transfers"] > 0].sort_values("net_transfers", ascending=False).head(15)
     likely_fall = candidates[candidates["net_transfers"] < 0].sort_values("net_transfers").head(15)
 
-    def show_transfer_table(data):
-        st.dataframe(
+    def show_transfer_table(data, key):
+        player_dataframe(
             data[["web_name", "team_name", "position", "price", "selected_by_percent", "net_transfers"]].rename(
                 columns={**display_cols_map, "net_transfers": "Net Transfers"}
             ),
+            data["id"],
+            key=key,
             hide_index=True,
             width="stretch",
             column_config={
@@ -137,9 +142,9 @@ with tab_likely:
         )
 
     st.subheader("📈 Likely to Rise")
-    show_transfer_table(likely_rise)
+    show_transfer_table(likely_rise, "likely_rise")
     st.subheader("📉 Likely to Fall")
-    show_transfer_table(likely_fall)
+    show_transfer_table(likely_fall, "likely_fall")
 
 with tab_mine:
     team_id = st.session_state.get("team_id")
@@ -189,10 +194,12 @@ with tab_mine:
             squad_df["Risk"] = squad_df.apply(classify, axis=1)
             squad_df = squad_df.sort_values("net_transfers")
 
-            st.dataframe(
+            player_dataframe(
                 squad_df[
                     ["web_name", "team_name", "position", "price", "change_gw", "change_season", "net_transfers", "Risk"]
                 ].rename(columns=display_cols_map),
+                squad_df["id"],
+                key="squad_price_risk",
                 hide_index=True,
                 width="stretch",
                 column_config={

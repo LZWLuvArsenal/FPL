@@ -15,6 +15,7 @@ from src.fpl_api import (
     get_league_standings,
 )
 from src.pitch import render_pitch, upcoming_fixture_labels
+from src.player_dialog import BREAKDOWN_LABELS, gw_points_breakdown, player_dataframe
 from src.snapshots import load_group_ownership
 from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df, season_name
 
@@ -150,13 +151,25 @@ try:
     if squad_view == "Pitch view":
         team_codes = {t["id"]: t["code"] for t in bootstrap["teams"]}
         team_shorts = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+        breakdown = gw_points_breakdown(event_id)
+        tooltips = {}
+        for _, r in picks_df.iterrows():
+            lines = [f"{label}: {value} → {points:+d} pts" for label, value, points in breakdown.get(r["id"], [])]
+            if lines:
+                total = sum(points for _, _, points in breakdown[r["id"]])
+                if r["multiplier"] > 1:
+                    lines.append(f"×{r['multiplier']} captain = {total * r['multiplier']} pts")
+                tooltips[r["id"]] = "\n".join([f"{r['web_name']} — {total} pts", *lines])
         st.markdown(
-            render_pitch(picks_df, team_codes, upcoming_fixture_labels(get_fixtures(), event_id, team_shorts)),
+            render_pitch(
+                picks_df, team_codes, upcoming_fixture_labels(get_fixtures(), event_id, team_shorts), tooltips
+            ),
             unsafe_allow_html=True,
         )
         st.caption(
             "Shows each player's points this gameweek, or their opponent if the match hasn't kicked off yet. "
-            "C = captain, V = vice-captain. Pink = 1 point or fewer, green = 8 or more."
+            "C = captain, V = vice-captain. Pink = 1 point or fewer, green = 8 or more. Hover a player for "
+            "their points breakdown."
         )
     else:
         squad_header = "".join(
@@ -185,6 +198,45 @@ try:
         st.caption("Greyed-out rows are on the bench.")
 except Exception:
     st.warning(f"Picks for GW{event_id} aren't available yet.")
+
+if picks_df is not None:
+    st.subheader(f"GW{event_id} Points Breakdown")
+    breakdown = gw_points_breakdown(event_id)
+    rows = []
+    for _, r in picks_df.sort_values("slot").iterrows():
+        row = {"Player": r["player"], "Pos": r["position"]}
+        for label, _, points in breakdown.get(r["id"], []):
+            row[label] = points
+        row["Pts"] = sum(points for _, _, points in breakdown.get(r["id"], []))
+        row["×"] = r["multiplier"]
+        row["Total"] = row["Pts"] * r["multiplier"]
+        rows.append(row)
+    bd = pd.DataFrame(rows)
+    if bd["Pts"].abs().sum() == 0:
+        st.caption("No points scored yet — check back once this gameweek's matches kick off.")
+    else:
+        order = list(BREAKDOWN_LABELS.values())
+        stat_cols = sorted(
+            (c for c in bd.columns if c not in ("Player", "Pos", "Pts", "×", "Total")),
+            key=lambda c: order.index(c) if c in order else len(order),
+        )
+        bd[stat_cols] = bd[stat_cols].fillna(0).astype(int)
+        player_dataframe(
+            bd[["Player", "Pos", *stat_cols, "Pts", "×", "Total"]],
+            picks_df.sort_values("slot")["id"],
+            key="gw_points_breakdown",
+            hide_index=True,
+            width="stretch",
+            column_config={
+                **{c: st.column_config.NumberColumn(format="%d") for c in stat_cols},
+                "×": st.column_config.NumberColumn(help="Multiplier: 2 captain, 3 triple captain, 0 benched (1 under Bench Boost)"),
+            },
+        )
+        st.caption(
+            f"Points from each source; Total = Pts × multiplier, so the Total column adds up to "
+            f"{int(bd['Total'].sum())}, your GW score before any transfer hits. Bench players are listed "
+            "with × 0. Click a player for their match-by-match details."
+        )
 
 TEMPLATE_OWNED_PCT = 30
 DIFFERENTIAL_OWNED_PCT = 10
@@ -273,9 +325,12 @@ else:
     with own_col1:
         st.markdown("**Your starters by ownership**")
         starters["tag"] = starters["own_pct"].apply(ownership_tag)
-        st.dataframe(
-            starters.sort_values("own_pct", ascending=False)[["player", "team_short", "position", *own_cols, "tag"]]
+        by_own = starters.sort_values("own_pct", ascending=False)
+        player_dataframe(
+            by_own[["player", "team_short", "position", *own_cols, "tag"]]
             .rename(columns={"player": "Player", "team_short": "Team", "position": "Pos", "tag": "Type", **own_labels}),
+            by_own["id"],
+            key="starters_by_ownership",
             hide_index=True,
             width="stretch",
             column_config=own_format,
@@ -288,10 +343,12 @@ else:
         if missing.empty:
             st.success("You're starting the entire template XI.")
         else:
-            st.dataframe(
+            player_dataframe(
                 missing[["web_name", "team_short", "position", *own_cols, "benched"]].rename(
                     columns={"web_name": "Player", "team_short": "Team", "position": "Pos", "benched": "", **own_labels}
                 ),
+                missing["id"],
+                key="template_not_starting",
                 hide_index=True,
                 width="stretch",
                 column_config=own_format,
@@ -330,7 +387,7 @@ else:
         flops = picks_df.copy()
         flops["vs_form"] = flops["event_points"] - flops["points_per_game"]
         flops = flops.sort_values("vs_form").head(5)
-        st.dataframe(
+        player_dataframe(
             flops[["web_name", "team_short", "role", "price", "event_points", "points_per_game", "vs_form"]]
             .round(1)
             .rename(
@@ -344,6 +401,8 @@ else:
                     "vs_form": "vs. Own Form",
                 }
             ),
+            flops["id"],
+            key="underperformers",
             hide_index=True,
             width="stretch",
             column_config={"Price": st.column_config.NumberColumn(format="£%.1f")},
@@ -356,7 +415,7 @@ else:
         missed = players[~players["id"].isin(my_ids) & (players["event_points"] > 0)].copy()
         missed["impact_score"] = missed["selected_by_percent"] * missed["event_points"]
         missed = missed.sort_values("impact_score", ascending=False).head(5)
-        st.dataframe(
+        player_dataframe(
             missed[["web_name", "team_short", "price", "selected_by_percent", "event_points"]].round(1).rename(
                 columns={
                     "web_name": "Player",
@@ -366,6 +425,8 @@ else:
                     "event_points": "GW Pts",
                 }
             ),
+            missed["id"],
+            key="template_hurting_rank",
             hide_index=True,
             width="stretch",
             column_config={"Price": st.column_config.NumberColumn(format="£%.1f")},

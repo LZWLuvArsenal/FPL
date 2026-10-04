@@ -7,6 +7,7 @@ import streamlit as st
 
 from src.config import render_sidebar_settings, style_chart
 from src.fpl_api import get_bootstrap_static, get_element_summary, get_fixtures
+from src.player_dialog import player_dataframe
 from src.team_model import project_match, team_rates, venue_factors
 from src.understat import (
     current_season,
@@ -334,6 +335,7 @@ if st.checkbox("Load all-time head-to-head record", value=False):
             seasons = sorted({format_season(m["season"]) for m in vs_opponent})
             hist_rows.append(
                 {
+                    "_id": p["id"],
                     "Player": p["web_name"],
                     "Team": p["team_short"],
                     "Opponent": team_short[away_id if p["team"] == home_id else home_id],
@@ -349,8 +351,10 @@ if st.checkbox("Load all-time head-to-head record", value=False):
 
     if hist_rows:
         hist_df = pd.DataFrame(hist_rows).sort_values(["Goals", "xG"], ascending=False)
-        st.dataframe(
-            hist_df,
+        player_dataframe(
+            hist_df.drop(columns="_id"),
+            hist_df["_id"],
+            key="h2h_player_records",
             hide_index=True,
             width="stretch",
             column_config={

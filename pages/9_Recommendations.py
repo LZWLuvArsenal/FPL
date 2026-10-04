@@ -16,6 +16,7 @@ from src.fpl_api import (
     get_event_live,
     get_fixtures,
 )
+from src.player_dialog import player_picker
 from src.tracker import add_snapshot
 from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df, teams_df
 
@@ -437,6 +438,7 @@ def render_recommendation_table(df, stat_col, stat_label, opp_stat_col, opp_stat
         f"<thead>{header}</thead><tbody>{''.join(rows_html)}</tbody></table></div>",
         unsafe_allow_html=True,
     )
+    player_picker(df["id"], df["web_name"], key=f"rec_picker_{df['position'].iloc[0]}")
 
 
 def _attacking_section(position, label, emoji, n=15):
@@ -1072,6 +1074,7 @@ def _render_my_squad_advice():
         f"<thead><tr>{header}</tr></thead><tbody>{''.join(rows_html)}</tbody></table></div>",
         unsafe_allow_html=True,
     )
+    player_picker(table.index, table["web_name"], key="rec_picker_my_squad")
     st.caption(
         f"GW{gw} Pts is the Next GW projection from the model above (GW{gw} only, doubles and blanks counted), "
         "scaled by each player's chance of playing (injury news) and by rotation risk (mins/game ÷ 75, capped "
@@ -1206,6 +1209,7 @@ else:
         f"<thead><tr>{header}</tr></thead><tbody>{''.join(rows_html)}</tbody></table></div>",
         unsafe_allow_html=True,
     )
+    player_picker(display_order.index, display_order["web_name"], key="rec_picker_best15")
 
     if is_owner():
         st.divider()

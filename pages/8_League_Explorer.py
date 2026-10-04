@@ -6,6 +6,7 @@ import streamlit as st
 
 from src.config import load_config, render_sidebar_settings, style_chart, update_config
 from src.fpl_api import get_bootstrap_static, get_entry, get_entry_picks, get_entry_transfers, get_league_standings
+from src.player_dialog import player_dataframe
 from src.pitch import shirt_url
 from src.utils import current_event, players_df
 
@@ -283,10 +284,12 @@ def render_transfers_in_out():
     in_col, out_col = st.columns(2)
     with in_col:
         st.markdown("**📥 Most transferred in**")
-        st.dataframe(transfer_ranking(gw_tdf, "_in_id"), hide_index=True, width="stretch", column_config=price_cfg)
+        ranked_in = transfer_ranking(gw_tdf, "_in_id")
+        player_dataframe(ranked_in, ranked_in.index, key="league_most_in", hide_index=True, width="stretch", column_config=price_cfg)
     with out_col:
         st.markdown("**📤 Most transferred out**")
-        st.dataframe(transfer_ranking(gw_tdf, "_out_id"), hide_index=True, width="stretch", column_config=price_cfg)
+        ranked_out = transfer_ranking(gw_tdf, "_out_id")
+        player_dataframe(ranked_out, ranked_out.index, key="league_most_out", hide_index=True, width="stretch", column_config=price_cfg)
 
 
 tab1, tab2, tab3, tab4 = st.tabs(["League Overview", "Manager Detail", "Player Breakdown", "All Transfers"])
@@ -416,7 +419,7 @@ with tab3:
         with col1:
             st.subheader("Most Owned in League")
             top_owned = own_df.sort_values("owners", ascending=False).head(15)
-            st.dataframe(
+            player_dataframe(
                 top_owned[["web_name", "team_short", "position", "owners", "ownership_pct"]].round(0).rename(
                     columns={
                         "web_name": "Player",
@@ -426,13 +429,15 @@ with tab3:
                         "ownership_pct": "Own %",
                     }
                 ),
+                top_owned.index,
+                key="league_top_owned",
                 hide_index=True,
                 width="stretch",
             )
         with col2:
             st.subheader("Most Captained in League")
             top_captained = own_df[own_df["captains"] > 0].sort_values("captains", ascending=False).head(15)
-            st.dataframe(
+            player_dataframe(
                 top_captained[["web_name", "team_short", "position", "captains", "captain_pct"]].round(0).rename(
                     columns={
                         "web_name": "Player",
@@ -442,13 +447,15 @@ with tab3:
                         "captain_pct": "Capt %",
                     }
                 ),
+                top_captained.index,
+                key="league_top_captained",
                 hide_index=True,
                 width="stretch",
             )
         with col3:
             st.subheader("Most Benched in League")
             top_benched = own_df[own_df["benched"] > 0].sort_values("benched", ascending=False).head(15)
-            st.dataframe(
+            player_dataframe(
                 top_benched[["web_name", "team_short", "position", "benched", "benched_pct"]].round(0).rename(
                     columns={
                         "web_name": "Player",
@@ -458,6 +465,8 @@ with tab3:
                         "benched_pct": "Bench %",
                     }
                 ),
+                top_benched.index,
+                key="league_top_benched",
                 hide_index=True,
                 width="stretch",
             )
@@ -474,7 +483,7 @@ with tab3:
             "can run much higher, e.g. (12 + 7) ÷ 13 = 146%."
         )
         top_eo = own_df[own_df["owners"] > 0].sort_values("effective_ownership_pct", ascending=False).head(15)
-        st.dataframe(
+        player_dataframe(
             top_eo[
                 ["web_name", "team_short", "position", "owners", "captains", "effective_ownership_pct"]
             ].round(0).rename(
@@ -487,6 +496,8 @@ with tab3:
                     "effective_ownership_pct": "Effective Ownership %",
                 }
             ),
+            top_eo.index,
+            key="league_top_eo",
             hide_index=True,
             width="stretch",
         )
@@ -535,11 +546,11 @@ with tab3:
                 "rival_ownership_pct"
             )
 
-            def show(df, cols_pct, label):
+            def show(df, cols_pct, label, key):
                 if df.empty:
                     st.caption("None at this threshold.")
                     return
-                st.dataframe(
+                player_dataframe(
                     df[["web_name", "team_short", "position", "price"] + cols_pct].round(0).rename(
                         columns={
                             "web_name": "Player",
@@ -549,24 +560,26 @@ with tab3:
                             **{c: label for c in cols_pct},
                         }
                     ),
+                    df.index,
+                    key=key,
                     hide_index=True,
                     width="stretch",
                     column_config={"Price": st.column_config.NumberColumn(format="£%.1f")},
                 )
 
             st.markdown("**🎯 Threats to your rank** — rivals own these, you don't. If they haul, you fall behind.")
-            show(threats, ["rival_ownership_pct"], "Rival Ownership %")
+            show(threats, ["rival_ownership_pct"], "Rival Ownership %", "league_threats")
 
             st.markdown(
                 "**😴 Sleepers** — near-universal ownership across the league. Whether you own these barely "
                 "moves your rank relative to rivals, since almost everyone has them."
             )
-            show(sleepers, ["ownership_pct"], "League Ownership %")
+            show(sleepers, ["ownership_pct"], "League Ownership %", "league_sleepers")
 
             st.markdown(
                 "**💎 Your differentials** — you own these, few rivals do. If they haul, you gain rank on the field."
             )
-            show(my_diffs, ["rival_ownership_pct"], "Rival Ownership %")
+            show(my_diffs, ["rival_ownership_pct"], "Rival Ownership %", "league_my_diffs")
 
 @st.fragment
 def render_all_transfers_log():

@@ -18,6 +18,7 @@ border-radius:14px;padding:16px 6px 4px;border:2px solid rgba(255,255,255,.55);m
 box-shadow:0 8px 24px rgba(0,0,0,.4);}
 .fpl-row{display:flex;justify-content:center;gap:clamp(6px,2.2vw,28px);margin:0 0 18px;}
 .fpl-p{width:clamp(56px,14vw,104px);text-align:center;position:relative;}
+.fpl-p[title]{cursor:help;}
 .fpl-p img{width:78%;display:block;margin:0 auto -6px;position:relative;z-index:1;}
 .fpl-name{background:#fff;color:#14001c;font-weight:700;font-size:clamp(.6rem,1.7vw,.86rem);padding:2px 2px;
 border-radius:5px 5px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative;z-index:2;}
@@ -52,7 +53,9 @@ def upcoming_fixture_labels(fixtures: list[dict], event: int, team_short: dict[i
     return labels
 
 
-def _card(row: pd.Series, team_codes: dict[int, int], fixture_labels: dict[int, str], slot_label: str = "") -> str:
+def _card(
+    row: pd.Series, team_codes: dict[int, int], fixture_labels: dict[int, str], slot_label: str = "", tooltip: str = ""
+) -> str:
     shirt = shirt_url(team_codes.get(int(row["team"]), 0), row["position"] == "GKP")
     badge = "C" if row["is_captain"] else "V" if row["is_vice_captain"] else ""
     label = fixture_labels.get(int(row["team"]))
@@ -63,29 +66,42 @@ def _card(row: pd.Series, team_codes: dict[int, int], fixture_labels: dict[int, 
         cls = "low" if pts <= 1 else "high" if pts >= 8 else ""
         pts_html = f'<div class="fpl-pts {cls}">{pts}</div>'
     slot_html = f'<div class="fpl-slot">{html.escape(slot_label)}</div>' if slot_label else ""
+    # Newlines as entities: a raw newline inside the HTML ends Streamlit's markdown HTML block mid-card.
+    title = f' title="{html.escape(tooltip).replace(chr(10), "&#10;")}"' if tooltip else ""
     return (
-        f'<div class="fpl-p">{slot_html}'
+        f'<div class="fpl-p"{title}>{slot_html}'
         f'{f"<span class=fpl-badge>{badge}</span>" if badge else ""}'
         f'<img src="{shirt}" alt="">'
         f'<div class="fpl-name">{html.escape(row["web_name"])}</div>{pts_html}</div>'
     )
 
 
-def render_pitch(picks: pd.DataFrame, team_codes: dict[int, int], fixture_labels: dict[int, str]) -> str:
+def render_pitch(
+    picks: pd.DataFrame,
+    team_codes: dict[int, int],
+    fixture_labels: dict[int, str],
+    tooltips: dict[int, str] | None = None,
+) -> str:
     """picks needs: slot, position (GKP/DEF/MID/FWD), team (id), web_name, event_points, is_captain,
-    is_vice_captain. Slots 1-11 are starters, 12-15 the bench (omitted if there are no bench players)."""
+    is_vice_captain. Slots 1-11 are starters, 12-15 the bench (omitted if there are no bench players).
+    `tooltips` (player id -> text, needs an `id` column) are shown on hover."""
+    tooltips = tooltips or {}
+    tip = lambda r: tooltips.get(int(r["id"]), "") if "id" in r else ""  # noqa: E731
     picks = picks.sort_values("slot")
     starters, bench = picks[picks["slot"] <= 11], picks[picks["slot"] > 11]
 
     rows = []
     for pos in POSITION_ROWS:
-        cards = "".join(_card(r, team_codes, fixture_labels) for _, r in starters[starters["position"] == pos].iterrows())
+        cards = "".join(
+            _card(r, team_codes, fixture_labels, tooltip=tip(r))
+            for _, r in starters[starters["position"] == pos].iterrows()
+        )
         rows.append(f'<div class="fpl-row">{cards}</div>')
 
     bench_html = ""
     if not bench.empty:
         bench_cards = "".join(
-            _card(r, team_codes, fixture_labels, "GKP" if r["position"] == "GKP" else f"{i}. {r['position']}")
+            _card(r, team_codes, fixture_labels, "GKP" if r["position"] == "GKP" else f"{i}. {r['position']}", tip(r))
             for i, (_, r) in enumerate(bench.iterrows())
         )
         bench_html = (
