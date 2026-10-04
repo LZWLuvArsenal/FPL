@@ -1,3 +1,4 @@
+import html
 from collections import Counter
 
 import pandas as pd
@@ -21,6 +22,8 @@ from src.understat import (
     understat_team_name,
 )
 from src.utils import current_event, next_event, players_df
+
+RECENT_MEETINGS = 6
 
 st.set_page_config(page_title="Head-to-Head - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
@@ -270,6 +273,39 @@ if st.checkbox("Load all-time head-to-head record", value=False):
             f"Most common scoreline: {home_understat} {common_score[0]}-{common_score[1]} {away_understat} "
             f'<span style="font-weight:400; opacity:0.75; font-size:1rem;">'
             f"({common_n} of {len(team_matches)} meetings)</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        # Recent form, newest last: the last few meetings, their split, and whatever streak is running.
+        outcomes = ["H" if h > a else "A" if h < a else "D" for h, a in perspective_scores]
+        outcome_color = {"H": "rgba(231, 76, 60, 0.85)", "D": "rgba(149, 165, 166, 0.85)", "A": "rgba(52, 152, 219, 0.85)"}
+        recent_n = min(RECENT_MEETINGS, len(outcomes))
+        recent = list(zip(outcomes, perspective_scores, match_rows))[-recent_n:]
+        chips = "".join(
+            f'<span title="{row["Date"]}: {html.escape(row["Result"])}" style="background:{outcome_color[o]}; '
+            f'color:white; font-weight:700; padding:4px 10px; border-radius:6px; font-size:0.95rem;">{h}-{a}</span>'
+            for o, (h, a), row in recent
+        )
+        split = Counter(o for o, _, _ in recent)
+
+        latest = outcomes[-1]
+        same = next((i for i, o in enumerate(reversed(outcomes)) if o != latest), len(outcomes))
+        streaks = []
+        if same >= 2:
+            streaks.append(
+                f"Last {same} meetings drawn" if latest == "D"
+                else f"{home_understat if latest == 'H' else away_understat} won the last {same}"
+            )
+        for team, loss in ((home_understat, "A"), (away_understat, "H")):
+            unbeaten = next((i for i, o in enumerate(reversed(outcomes)) if o == loss), len(outcomes))
+            if unbeaten >= 3 and unbeaten > same:
+                streaks.append(f"{team} unbeaten in the last {unbeaten}")
+        streak = " · ".join(streaks)
+        st.markdown(
+            f'<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:0 0 6px;">'
+            f'<span style="font-weight:600; margin-right:4px;">Last {recent_n} (oldest → newest):</span>{chips}</div>'
+            f'<div style="opacity:0.85; margin-bottom:12px;">{home_understat} {split["H"]}W · {split["D"]}D · '
+            f'{away_understat} {split["A"]}W{f" — <b>{html.escape(streak)}</b>" if streak else ""}</div>',
             unsafe_allow_html=True,
         )
 
