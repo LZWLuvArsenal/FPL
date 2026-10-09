@@ -172,13 +172,35 @@ def _saved_team_cookie() -> str:
 
 
 def _remember_team_in_browser(team_id: str) -> None:
-    """Stores the Team ID in a year-long cookie so it survives a refresh or a return visit. It's written
-    by a zero-height iframe (same origin as the app) and read back server-side via st.context.cookies."""
+    """Stores the Team ID in localStorage (restored client-side by _restore_team_from_browser) and in a
+    year-long cookie (read server-side via st.context.cookies where the host forwards cookies)."""
     digits = team_id.strip() if team_id.strip().isdigit() else ""
     max_age = 31536000 if digits else 0  # empty / invalid ID clears the cookie
-    st.components.v1.html(
-        f"<script>document.cookie = '{TEAM_COOKIE}={digits}; max-age={max_age}; path=/; SameSite=Lax';</script>",
-        height=0,
+    st.html(
+        f"""<script>
+        try {{ {f"localStorage.setItem('{TEAM_COOKIE}', '{digits}')" if digits else f"localStorage.removeItem('{TEAM_COOKIE}')"}; }} catch (e) {{}}
+        document.cookie = '{TEAM_COOKIE}={digits}; max-age={max_age}; path=/; SameSite=Lax';
+        </script>""",
+        unsafe_allow_javascript=True,
+    )
+
+
+def _restore_team_from_browser() -> None:
+    """When a visitor arrives with no Team ID, reloads once with ?team=<saved id> from localStorage. Done
+    in the browser because hosted deployments don't reliably pass cookies through to st.context.cookies.
+    Skipped if the URL already has a team param (including an empty one, i.e. a deliberately cleared ID)."""
+    st.html(
+        f"""<script>
+        try {{
+            const saved = localStorage.getItem('{TEAM_COOKIE}');
+            const url = new URL(window.location.href);
+            if (saved && /^\\d+$/.test(saved) && !url.searchParams.has('team')) {{
+                url.searchParams.set('team', saved);
+                window.location.replace(url.toString());
+            }}
+        }} catch (e) {{}}
+        </script>""",
+        unsafe_allow_javascript=True,
     )
 
 
@@ -194,6 +216,8 @@ def render_sidebar_settings() -> None:
         st.session_state["config_loaded"] = True
 
     with st.sidebar:
+        if not is_owner() and not st.session_state["team_id"]:
+            _restore_team_from_browser()
         st.header("Settings")
         team_id = st.text_input("Your FPL Team ID", value=st.session_state["team_id"])
         if st.button("Save"):
