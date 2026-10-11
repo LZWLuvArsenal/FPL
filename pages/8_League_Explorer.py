@@ -5,7 +5,16 @@ import plotly.express as px
 import streamlit as st
 
 from src.config import load_config, render_sidebar_settings, style_chart, update_config
-from src.fpl_api import get_bootstrap_static, get_entry, get_entry_picks, get_entry_transfers, get_league_standings
+from src.fpl_api import (
+    get_bootstrap_static,
+    get_entry,
+    get_entry_history,
+    get_entry_picks,
+    get_entry_transfers,
+    get_event_live,
+    get_fixtures,
+    get_league_standings,
+)
 from src.player_dialog import player_dataframe
 from src.pitch import shirt_url
 from src.utils import current_event, players_df
@@ -62,6 +71,9 @@ standings_data = get_league_standings(league_id)
 members = pd.DataFrame(standings_data["standings"]["results"])
 st.subheader(standings_data["league"]["name"])
 
+# Points for the chosen gameweek (bootstrap's event_points is always the current one).
+live_points = {el["id"]: el["stats"]["total_points"] for el in get_event_live(gw)["elements"]}
+
 
 _CARD_STYLE = "display:grid; grid-template-columns:repeat(auto-fill, minmax(108px, 1fr)); gap:8px; margin-bottom:4px;"
 
@@ -100,26 +112,31 @@ def _player_card(row, bench, ownership_pct, effective_ownership_pct=None):
     else:
         own_line = ""
     shirt = shirt_url(_TEAM_CODES.get(int(row["team"]), 0), row["player_pos"] == "GKP")
+    # Captain ×2 / triple captain ×3; the bench's multiplier is 0, so show its raw points instead.
+    multiplier = max(int(row.get("multiplier", 1)), 1)
+    points = row["event_points"] * multiplier
+    points_title = f' title="{row["event_points"]} × {multiplier}"' if multiplier > 1 else ""
     return (
         f'<div style="background:{bg}; border:1px solid rgba(128,128,128,0.25); border-radius:8px; '
         f'padding:6px 4px; text-align:center;">'
         f'<img src="{shirt}" alt="" style="height:44px; display:block; margin:0 auto 2px;">'
         f'<div style="font-size:0.82rem; font-weight:600; line-height:1.25;">{name}{role}</div>'
         f'<div style="font-size:0.72rem; opacity:0.65;">{team} ({pos})</div>'
-        f'<div style="font-size:0.95rem; font-weight:700; margin-top:2px;">{row["event_points"]} pts</div>'
+        f'<div style="font-size:0.95rem; font-weight:700; margin-top:2px;"{points_title}>{points} pts</div>'
         f"{own_line}"
         f"</div>"
     )
 
 
-def render_squad_grid(picks_payload, own_df=None):
+def squad_grid_html(picks_payload, own_df=None):
     df = pd.DataFrame(picks_payload["picks"]).merge(
         players.reset_index().rename(columns={"position": "player_pos"})[
-            ["id", "web_name", "team", "team_short", "event_points", "player_pos"]
+            ["id", "web_name", "team", "team_short", "player_pos"]
         ],
         left_on="element",
         right_on="id",
     ).sort_values("position")
+    df["event_points"] = df["element"].map(live_points).fillna(0).astype(int)
 
     starters = df[df["position"] <= 11]
     bench = df[df["position"] > 11]
@@ -130,18 +147,146 @@ def render_squad_grid(picks_payload, own_df=None):
         row = own_df.loc[element_id]
         return row["ownership_pct"], row["effective_ownership_pct"]
 
-    st.markdown(
+    return (
         f'<div style="{_CARD_STYLE}">'
         + "".join(_player_card(r, False, *ownership_for(r["element"])) for _, r in starters.iterrows())
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption("Bench")
-    st.markdown(
-        f'<div style="{_CARD_STYLE}">'
+        + '</div><div style="font-size:0.85rem; opacity:0.6; margin:10px 0 6px;">Bench</div>'
+        + f'<div style="{_CARD_STYLE}">'
         + "".join(_player_card(r, True, *ownership_for(r["element"])) for _, r in bench.iterrows())
-        + "</div>",
-        unsafe_allow_html=True,
+        + "</div>"
+    )
+
+
+def render_squad_grid(picks_payload, own_df=None):
+    st.markdown(squad_grid_html(picks_payload, own_df), unsafe_allow_html=True)
+
+
+_ROW_CSS = """<style>
+.lg-row{border:1px solid #4A2266;border-radius:14px;background:rgba(255,255,255,0.03);margin-bottom:10px;overflow:hidden;}
+.lg-row.match{border-color:#00ff87;box-shadow:0 0 0 1px #00ff87;}
+.lg-row.me{background:rgba(0,255,135,0.06);}
+.lg-row>summary{list-style:none;cursor:pointer;}
+.lg-row>summary::-webkit-details-marker{display:none;}
+.lg-main{display:grid;grid-template-columns:64px minmax(150px,2.2fr) 0.7fr minmax(110px,1.5fr) 0.8fr 0.9fr 22px;
+align-items:center;gap:8px;padding:12px 16px 8px;min-width:640px;}
+.lg-scroll{overflow-x:auto;}
+.lg-rank{text-align:center;font-size:1.2rem;font-weight:700;line-height:1.1;}
+.lg-move{display:block;font-size:0.66rem;font-weight:600;}
+.lg-move.up{color:#00ff87;}
+.lg-move.down{color:#ff4d6d;}
+.lg-move.same{opacity:0.5;}
+.lg-team{font-size:1.05rem;font-weight:700;}
+.lg-mgr{font-size:0.9rem;opacity:0.85;}
+.lg-or{display:inline-block;margin-top:4px;font-size:0.78rem;border:1px solid #4A2266;border-radius:999px;padding:1px 9px;}
+.lg-num{text-align:center;font-size:1.15rem;font-weight:700;}
+.lg-lbl{display:block;font-size:0.66rem;font-weight:400;opacity:0.55;text-transform:uppercase;letter-spacing:.04em;}
+.lg-cap{text-align:center;font-weight:700;}
+.lg-vc{display:block;font-size:0.75rem;font-weight:400;opacity:0.6;}
+.lg-chev{opacity:0.5;font-size:1.2rem;transition:transform .15s;}
+.lg-row[open] .lg-chev{transform:rotate(90deg);}
+.lg-foot{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 16px 12px;border-top:1px solid rgba(128,128,128,0.2);}
+.lg-chip{font-size:0.8rem;border:1px solid #4A2266;border-radius:999px;padding:2px 10px;background:rgba(255,255,255,0.04);white-space:nowrap;}
+.lg-chip b{margin-right:4px;}
+.lg-chip.chip{background:#00ff87;color:#14001c;border-color:#00ff87;font-weight:700;}
+.lg-out{color:#ff4d6d;text-decoration:line-through;}
+.lg-net{font-weight:700;font-size:0.9rem;margin-left:4px;}
+.lg-body{padding:12px 16px 14px;border-top:1px solid rgba(128,128,128,0.2);}
+</style>"""
+
+CHIP_LABELS = {"wildcard": "WILDCARD", "freehit": "FREE HIT", "bboost": "BENCH BOOST", "3xc": "TRIPLE CAPTAIN"}
+CHIP_SHORT = {"wildcard": "WC", "freehit": "FH", "bboost": "BB", "3xc": "TC"}
+# Chips come in halves (GW1-19, GW20-38); these are the ones whose window holds the chosen gameweek.
+_CHIP_WINDOWS = [c for c in bootstrap.get("chips", []) if c["start_event"] <= gw <= c["stop_event"]]
+
+
+def chips_left(chips_used):
+    """Chips still unplayed in this half of the season, in FPL's order."""
+    return [
+        c["name"] for c in _CHIP_WINDOWS
+        if not any(u["name"] == c["name"] and c["start_event"] <= u["event"] <= c["stop_event"] for u in chips_used)
+    ]
+
+
+_team_kicked_off = {}  # team -> every one of its fixtures this GW has kicked off (a double needs both)
+for _f in get_fixtures():
+    if _f["event"] == gw:
+        for _t in (_f["team_h"], _f["team_a"]):
+            _team_kicked_off[_t] = _team_kicked_off.get(_t, True) and bool(_f["started"])
+
+
+def _signed(value):
+    if not value:
+        return "0"
+    color = "#00ff87" if value > 0 else "#ff4d6d"
+    return f'<span style="color:{color};">{value:+d}</span>'
+
+
+def manager_row_html(m, picks_payload, gw_transfers, chips_used, own_df, match=False):
+    """One league row: rank and movement, team, overall rank, players still to play, captain/vice, GW and
+    total points, with a footer of team value, played count and this GW's transfers. Clicking it opens the
+    squad grid."""
+    entry_id = int(m["entry"])
+    history = picks_payload["entry_history"]
+    picks_list = picks_payload["picks"]
+    rank, last_rank = int(m["rank"]), int(m.get("last_rank") or 0)
+    if not last_rank or last_rank == rank:
+        move = '<span class="lg-move same">–</span>'
+    elif last_rank > rank:
+        move = f'<span class="lg-move up">▲ {last_rank - rank}</span>'
+    else:
+        move = f'<span class="lg-move down">▼ {rank - last_rank}</span>'
+
+    def name(element_id):
+        return html.escape(players["web_name"].get(element_id, "?"))
+
+    cap = next((p for p in picks_list if p["is_captain"]), None)
+    vc = next((p for p in picks_list if p["is_vice_captain"]), None)
+    # The captain counts once per multiplier, so a normal XI is out of 12 (13 with Triple Captain).
+    starters = [p for p in picks_list if p["multiplier"] > 0]
+    total_slots = sum(p["multiplier"] for p in starters)
+    played = sum(
+        p["multiplier"] for p in starters
+        if _team_kicked_off.get(int(players["team"].get(p["element"], 0)), True)
+    )
+    overall_rank = history.get("overall_rank")
+
+    foot = [
+        f'<span class="lg-chip"><b>TV</b>£{history["value"] / 10:.1f}</span>',
+        f'<span class="lg-chip"><b>PLAYED</b>{played}/{total_slots}</span>',
+        f'<span class="lg-chip" title="Chips not yet played this half of the season"><b>CHIPS</b>'
+        f'{" ".join(CHIP_SHORT.get(c, c) for c in chips_left(chips_used)) or "none"}</span>',
+    ]
+    if picks_payload.get("active_chip"):
+        chip = picks_payload["active_chip"]
+        foot.insert(0, f'<span class="lg-chip chip">{CHIP_LABELS.get(chip, html.escape(chip))}</span>')
+    total_gain = 0
+    for t in gw_transfers:
+        gain = live_points.get(t["element_in"], 0) - live_points.get(t["element_out"], 0)
+        total_gain += gain
+        foot.append(
+            f'<span class="lg-chip"><span class="lg-out">{name(t["element_out"])}</span> → '
+            f'<b>{name(t["element_in"])}</b> ({_signed(gain)})</span>'
+        )
+    hit = history.get("event_transfers_cost", 0)
+    if gw_transfers or hit:
+        hit_part = f" − {hit}" if hit else ""
+        foot.append(f'<span class="lg-net">({_signed(total_gain)}{hit_part} = {_signed(total_gain - hit)})</span>')
+
+    classes = "lg-row" + (" match" if match else "") + (" me" if entry_id == team_id else "")
+    or_html = f'<span class="lg-or"><b>OR</b> {overall_rank:,}</span>' if overall_rank else ""
+    return (
+        f'<details class="{classes}"><summary><div class="lg-scroll"><div class="lg-main">'
+        f'<div class="lg-rank">{rank}{move}</div>'
+        f'<div><div class="lg-team">{html.escape(m["entry_name"])}</div>'
+        f'<div class="lg-mgr">{html.escape(m["player_name"])}</div>{or_html}</div>'
+        f'<div class="lg-num">{total_slots - played}<span class="lg-lbl">To play</span></div>'
+        f'<div class="lg-cap">{name(cap["element"]) if cap else "-"}'
+        f'<span class="lg-vc">{name(vc["element"]) if vc else ""}</span></div>'
+        f'<div class="lg-num">{history["points"]}<span class="lg-lbl">GW</span></div>'
+        f'<div class="lg-num">{int(m["total"]):,}<span class="lg-lbl">Total</span></div>'
+        '<div class="lg-chev">›</div>'
+        f'</div></div><div class="lg-foot">{"".join(foot)}</div></summary>'
+        f'<div class="lg-body">{squad_grid_html(picks_payload, own_df)}</div></details>'
     )
 
 
@@ -357,10 +502,41 @@ with tab1:
             st.caption(f"{len(highlighted_entries)} manager(s) {verb} {selected_label} this gameweek.")
 
         st.subheader("Squads")
-        for _, row in overview_df.iterrows():
-            marker = "🟢 " if row["_match"] else ""
-            with st.expander(f"{marker}{row['Manager']} — {row['Team']}  ·  {row['GW Points']} pts"):
-                render_squad_grid(league_picks[row["_entry_id"]], own_df)
+        if transfer_cache_key not in st.session_state:
+            with st.spinner(f"Loading transfers for {len(members)} managers..."):
+                load_league_transfers()
+        all_transfers = st.session_state.get(transfer_cache_key) or {}
+        history_cache_key = f"league_history_{league_id}"
+        if history_cache_key not in st.session_state:
+            loaded_history = {}
+            with st.spinner(f"Loading chip history for {len(members)} managers..."):
+                for _, hm in members.iterrows():
+                    try:
+                        loaded_history[int(hm["entry"])] = get_entry_history(int(hm["entry"]))["chips"]
+                    except Exception:
+                        pass
+            st.session_state[history_cache_key] = loaded_history
+        all_chips = st.session_state[history_cache_key]
+        cards = []
+        for _, m in members.sort_values("rank").iterrows():
+            entry_id = int(m["entry"])
+            if entry_id not in league_picks:
+                continue
+            gw_transfers = sorted(
+                (t for t in all_transfers.get(entry_id, []) if t["event"] == gw), key=lambda t: t["time"]
+            )
+            cards.append(
+                manager_row_html(
+                    m, league_picks[entry_id], gw_transfers, all_chips.get(entry_id, []), own_df,
+                    entry_id in highlighted_entries,
+                )
+            )
+        st.markdown(_ROW_CSS + "".join(cards), unsafe_allow_html=True)
+        st.caption(
+            "Click a row to see the squad. To play counts starters whose match hasn't kicked off yet, the captain "
+            "once per multiplier. Each transfer shows this GW's points for the player in minus the player out, "
+            "and the total in brackets takes off any hit. Rows outlined in green match Find a Player."
+        )
 
 with tab2:
     manager_options = {f"{r['player_name']} — {r['entry_name']}": int(r["entry"]) for _, r in members.iterrows()}

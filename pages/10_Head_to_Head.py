@@ -9,6 +9,7 @@ import streamlit as st
 from src.config import render_sidebar_settings, style_chart
 from src.fpl_api import get_bootstrap_static, get_element_summary, get_fixtures
 from src.player_dialog import player_dataframe
+from src.section_nav import SectionNav
 from src.team_model import project_match, team_rates, venue_factors
 from src.understat import (
     current_season,
@@ -28,6 +29,7 @@ RECENT_MEETINGS = 6
 st.set_page_config(page_title="Head-to-Head - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
 st.title("Head-to-Head: Player vs Upcoming Opponent")
+nav = SectionNav()
 
 bootstrap = get_bootstrap_static()
 fixtures = get_fixtures()
@@ -52,7 +54,7 @@ home_id, away_id = chosen["team_h"], chosen["team_a"]
 
 squad = players[players["team"].isin([home_id, away_id])]
 
-st.subheader("Match projection")
+nav.section("Match projection", "⚖️ Projection")
 finished_events = sorted(e["id"] for e in bootstrap["events"] if e["finished"])
 form_window = 0
 if finished_events:
@@ -119,7 +121,7 @@ else:
         "under-rate low-scoring draws a little — and are model estimates, not bookmaker odds."
     )
 
-st.subheader("This season")
+nav.section("This season", "📅 This Season")
 
 rows = []
 with st.spinner(f"Checking {len(squad)} players' history against their GW{gw} opponent..."):
@@ -156,7 +158,7 @@ st.caption(
     "fixture for the current campaign, not prior seasons."
 )
 
-st.subheader("All-time record (via Understat)")
+nav.section("All-time record (via Understat)", "📚 All-Time")
 st.caption(
     "Understat.com is an unofficial, third-party stats site (not affiliated with the Premier "
     "League or FPL) covering every season it has tracked since 2014/15. Players are matched by "

@@ -17,12 +17,14 @@ from src.fpl_api import (
     get_fixtures,
 )
 from src.player_dialog import player_picker
+from src.section_nav import SectionNav
 from src.tracker import add_snapshot
 from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df, teams_df
 
 st.set_page_config(page_title="Recommendations - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
 st.title("Recommendations")
+nav = SectionNav()
 st.caption(
     "Each position list below is ranked by Next GW: a modeled expected-points estimate for the "
     "upcoming gameweek alone, built from underlying per-90 rates (goals, assists, clean sheets, bonus, "
@@ -443,7 +445,7 @@ def render_recommendation_table(df, stat_col, stat_label, opp_stat_col, opp_stat
 
 def _attacking_section(position, label, emoji, n=15):
     st.divider()
-    st.subheader(f"{emoji} {label} (Next {num_gw} GW{'s' if num_gw > 1 else ''})")
+    nav.section(f"{emoji} {label} (Next {num_gw} GW{'s' if num_gw > 1 else ''})", f"{emoji} {label}")
     st.caption(
         "Ranked by Next GW: modeled expected points for gameweek "
         f"{gw} alone. Score (also shown) is a separate equal-weight blend of own xGI/90, the upcoming "
@@ -467,7 +469,7 @@ def _attacking_section(position, label, emoji, n=15):
 
 def _defensive_section(position, label, emoji, n=15):
     st.divider()
-    st.subheader(f"{emoji} {label} (Next {num_gw} GW{'s' if num_gw > 1 else ''})")
+    nav.section(f"{emoji} {label} (Next {num_gw} GW{'s' if num_gw > 1 else ''})", f"{emoji} {label}")
     st.caption(
         f"Ranked by Next GW: modeled expected points for gameweek {gw} alone. Score (also shown) is a "
         "separate equal-weight blend of fixture difficulty, own team's xGC/90, and the upcoming "
@@ -946,7 +948,7 @@ def _render_transfer_planner(squad_rows, my_team_id):
 
 def _render_my_squad_advice():
     st.divider()
-    st.subheader(f"🧑‍💼 Your Squad — Who to Start & Bench (GW{gw})")
+    nav.section(f"🧑‍💼 Your Squad — Who to Start & Bench (GW{gw})", "🧑‍💼 Your Squad")
     my_team_id = str(st.session_state.get("team_id") or "").strip()
     if not my_team_id.isdigit():
         st.info("Enter your Team ID in the sidebar to get start / bench advice for your current squad.")
@@ -1096,7 +1098,7 @@ fwd_pool = _attacking_section("FWD", "Forwards", "⚡")
 
 
 st.divider()
-st.subheader("💰 Recommended 15 — Best Squad Within Budget")
+nav.section("💰 Recommended 15 — Best Squad Within Budget", "💰 Recommended 15")
 
 default_budget = 100.0
 team_id = st.session_state.get("team_id")

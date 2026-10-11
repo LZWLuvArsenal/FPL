@@ -11,11 +11,13 @@ from src.fpl_api import (
     get_entry_history,
     get_entry_picks,
     get_entry_transfers,
+    get_event_live,
     get_fixtures,
     get_league_standings,
 )
-from src.pitch import render_pitch, upcoming_fixture_labels
+from src.pitch import render_pitch, shirt_url, upcoming_fixture_labels
 from src.player_dialog import BREAKDOWN_LABELS, gw_points_breakdown, player_dataframe
+from src.section_nav import SectionNav
 from src.snapshots import load_group_ownership
 from src.utils import FDR_STYLE_UNKNOWN, FDR_STYLES, current_event, next_event, players_df, season_name
 
@@ -24,6 +26,7 @@ OVERALL_LEAGUE_ID = 314
 st.set_page_config(page_title="My Team - FPL Dashboard", page_icon="⚽", layout="wide")
 render_sidebar_settings()
 st.title("My Team")
+nav = SectionNav()
 
 team_id = st.session_state.get("team_id")
 if not team_id:
@@ -75,7 +78,7 @@ if this_event and this_event.get("average_entry_score") is not None:
     else:
         rating = "😬 Rough Week"
 
-    st.subheader(f"How Did GW{this_event['id']} Go?")
+    nav.section(f"How Did GW{this_event['id']} Go?", "📊 GW Review")
     rcol1, rcol2, rcol3 = st.columns(3)
     rcol1.metric("Gameweek Rating", rating, f"{diff:+d} vs average")
     rcol2.metric("Average Score (All Managers)", avg_points)
@@ -86,7 +89,7 @@ chip_by_event = {c["event"]: CHIP_NAMES.get(c["name"], c["name"]) for c in histo
 
 season_history = pd.DataFrame(history["current"])
 if not season_history.empty:
-    st.subheader("Season Progression")
+    nav.section("Season Progression", "📈 Season")
     display_history = season_history[
         ["event", "points", "points_on_bench", "event_transfers", "event_transfers_cost", "overall_rank", "value"]
     ].copy()
@@ -114,7 +117,7 @@ if not season_history.empty:
         },
     )
 
-st.subheader("Current Squad")
+nav.section("Current Squad", "⚽ Squad")
 event_id = current_event(bootstrap)
 picks_df = None
 try:
@@ -200,7 +203,7 @@ except Exception:
     st.warning(f"Picks for GW{event_id} aren't available yet.")
 
 if picks_df is not None:
-    st.subheader(f"GW{event_id} Points Breakdown")
+    nav.section(f"GW{event_id} Points Breakdown", "🔢 Points")
     breakdown = gw_points_breakdown(event_id)
     rows = []
     for _, r in picks_df.sort_values("slot").iterrows():
@@ -238,6 +241,81 @@ if picks_df is not None:
             "with × 0. Click a player for their match-by-match details."
         )
 
+gw_transfers = sorted(
+    (t for t in get_entry_transfers(team_id) if t["event"] == event_id), key=lambda t: t["time"]
+)
+if gw_transfers:
+    nav.section(f"GW{event_id} Transfers", "🔄 GW Transfers")
+    live_points = {el["id"]: el["stats"]["total_points"] for el in get_event_live(event_id)["elements"]}
+    by_id = players.set_index("id")
+    team_codes = {t["id"]: t["code"] for t in bootstrap["teams"]}
+    team_shorts = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+    not_started = upcoming_fixture_labels(get_fixtures(), event_id, team_shorts)
+
+    def transfer_side(element_id, name_color):
+        pts = live_points.get(element_id, 0)
+        if element_id not in by_id.index:  # player removed from the game since the transfer
+            return f'<span class="tr-side"><span class="tr-name">?</span><span class="tr-chip">{pts}</span></span>', pts
+        p = by_id.loc[element_id]
+        label = not_started.get(int(p["team"]))
+        if label:
+            chip = f'<span class="tr-chip fix">{html.escape(label)}</span>'
+        else:
+            chip = f'<span class="tr-chip{" low" if pts <= 1 else ""}">{pts}</span>'
+        shirt = shirt_url(team_codes.get(int(p["team"]), 0), p["position"] == "GKP")
+        return (
+            f'<span class="tr-side"><img src="{shirt}" alt="">'
+            f'<span class="tr-name" style="color:{name_color};">{html.escape(p["web_name"])}</span>{chip}</span>'
+        ), pts
+
+    def signed_span(value):
+        color = "#00ff87" if value > 0 else "#ff4d6d" if value < 0 else "inherit"
+        return f'<span style="color:{color};">{value:+d}</span>' if value else "0"
+
+    transfer_rows_html = []
+    total_gain = 0
+    for i, t in enumerate(gw_transfers, start=1):
+        out_html, out_pts = transfer_side(t["element_out"], "#ff4d6d")
+        in_html, in_pts = transfer_side(t["element_in"], "#00ff87")
+        gain = in_pts - out_pts
+        total_gain += gain
+        transfer_rows_html.append(
+            f'<tr><td class="tr-num">{i}</td><td>{out_html}</td><td class="tr-arrow">→</td>'
+            f'<td>{in_html}</td><td class="tr-gain">{signed_span(gain)}</td></tr>'
+        )
+    hit = next((h["event_transfers_cost"] for h in history["current"] if h["event"] == event_id), 0)
+    net = total_gain - hit
+    hit_str = f"-{hit}" if hit else "0"
+    st.markdown(
+        """<style>
+.tr-card{border:1px solid #4A2266;border-radius:12px;overflow:hidden;max-width:780px;margin-bottom:8px;}
+.tr-card table{width:100%;border-collapse:collapse;font-size:0.95rem;}
+.tr-card th{text-align:right;font-weight:400;font-size:0.8rem;opacity:0.7;padding:8px 14px;}
+.tr-card td{padding:8px 10px;border-top:1px solid rgba(128,128,128,0.2);vertical-align:middle;}
+.tr-side{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;}
+.tr-side img{width:30px;}
+.tr-name{font-weight:600;}
+.tr-chip{font-weight:700;font-size:0.82rem;padding:1px 7px;border-radius:5px;}
+.tr-chip.low{background:#e0314f;color:#fff;}
+.tr-chip.fix{background:#ebebe4;color:#14001c;font-weight:600;font-size:0.72rem;}
+.tr-num{opacity:0.6;width:1.5em;}
+.tr-arrow{opacity:0.6;width:1.5em;}
+.tr-gain{text-align:right;font-weight:700;padding-right:14px !important;}
+.tr-total td{font-size:1.05rem;background:rgba(255,255,255,0.04);}
+</style>"""
+        '<div class="tr-card"><table><thead><tr><th colspan="5">Immediate Gain</th></tr></thead><tbody>'
+        f"{''.join(transfer_rows_html)}"
+        f'<tr class="tr-total"><td colspan="4" style="font-weight:600;">Total</td>'
+        f'<td class="tr-gain">{signed_span(total_gain)}({hit_str}) = {signed_span(net)}</td></tr>'
+        "</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Immediate Gain = this gameweek's points for the player you brought in minus the player you sold, "
+        "regardless of who you started or captained. Total shows the gain (minus any hit) = net. Players "
+        "whose match hasn't kicked off show their opponent instead; their 0 still counts until they play."
+    )
+
 TEMPLATE_OWNED_PCT = 30
 DIFFERENTIAL_OWNED_PCT = 10
 FORMATION_LIMITS = {"DEF": (3, 5), "MID": (2, 5), "FWD": (1, 3)}
@@ -268,7 +346,7 @@ def template_xi(players):
     return pool[pool["id"].isin(taken)]
 
 
-st.subheader("Template or Differential?")
+nav.section("Template or Differential?", "🧱 Template")
 if picks_df is None:
     st.caption("Needs this gameweek's squad picks — see the warning above.")
 else:
@@ -376,7 +454,7 @@ else:
         if missing_groups:
             st.caption(f"{' and '.join(missing_groups)} ownership for GW{event_id} hasn't been computed yet.")
 
-st.subheader("Room for Improvement")
+nav.section("Room for Improvement", "🔻 Improve")
 if picks_df is None:
     st.caption("Needs this gameweek's squad picks — see the warning above.")
 else:
@@ -439,15 +517,24 @@ else:
 
     st.markdown("**🔻 To consider selling**")
     st.caption(
-        "Blanked (no goals, no assists) in each of their last 3 appearances. Keepers/defenders also get "
+        "Blanked (no goals, no assists) in each of their last 3 appearances since you brought them in — a "
+        "player you've just bought isn't flagged for blanks before you owned them. Keepers/defenders also get "
         "a pass for a clean sheet (worth a full 4pts for them), but midfielders and forwards don't — a "
         "mid's clean sheet is only worth 1pt, not enough to call the week productive on its own."
     )
     fixtures = get_fixtures()
     team_short_map = players.set_index("team")["team_short"].to_dict()
 
+    # GW each player joined your squad (latest transfer in), so only appearances while you owned them count.
+    acquired_gw = {}
+    for t in sorted(get_entry_transfers(team_id), key=lambda t: t["time"]):
+        acquired_gw[t["element_in"]] = t["event"]
+
     def blanked_last_3(element_id, position):
-        played = [h for h in get_element_summary(int(element_id))["history"] if h["minutes"] > 0]
+        since = acquired_gw.get(element_id, entry.get("started_event") or 1)
+        played = [
+            h for h in get_element_summary(int(element_id))["history"] if h["minutes"] > 0 and h["round"] >= since
+        ]
         if len(played) < 3:
             return False
 
@@ -545,7 +632,7 @@ else:
             f"Recommendations page, over the next {REPL_WINDOW} gameweeks."
         )
 
-st.subheader("Rank Milestones")
+nav.section("Rank Milestones", "🏁 Milestones")
 st.caption(
     "How many more overall (season-total) points you'd need to reach specific rank cutoffs, read from "
     "the live Overall league standings. A true *average* score across, say, the whole top 100k would mean "
@@ -599,7 +686,7 @@ if milestone_rows:
         },
     )
 
-st.subheader("Transfer History")
+nav.section("Transfer History", "📜 Transfer History")
 transfers = get_entry_transfers(team_id)
 if not transfers:
     st.caption("No transfers made this season.")
