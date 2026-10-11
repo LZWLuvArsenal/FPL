@@ -62,7 +62,8 @@ def _card(
     if label:
         pts_html = f'<div class="fpl-pts fix">{html.escape(label)}</div>'
     else:
-        pts = int(row["event_points"])
+        # Captain ×2 / triple captain ×3; the bench's multiplier is 0, so it keeps its raw points.
+        pts = int(row["event_points"]) * max(int(row.get("multiplier", 1)), 1)
         cls = "low" if pts <= 1 else "high" if pts >= 8 else ""
         pts_html = f'<div class="fpl-pts {cls}">{pts}</div>'
     slot_html = f'<div class="fpl-slot">{html.escape(slot_label)}</div>' if slot_label else ""
@@ -83,7 +84,7 @@ def render_pitch(
     tooltips: dict[int, str] | None = None,
 ) -> str:
     """picks needs: slot, position (GKP/DEF/MID/FWD), team (id), web_name, event_points, is_captain,
-    is_vice_captain. Slots 1-11 are starters, 12-15 the bench (omitted if there are no bench players).
+    is_vice_captain, and optionally multiplier (points are shown multiplied, e.g. ×2 for the captain). Slots 1-11 are starters, 12-15 the bench (omitted if there are no bench players).
     `tooltips` (player id -> text, needs an `id` column) are shown on hover."""
     tooltips = tooltips or {}
     tip = lambda r: tooltips.get(int(r["id"]), "") if "id" in r else ""  # noqa: E731
