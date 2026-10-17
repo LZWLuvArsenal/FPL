@@ -1097,6 +1097,99 @@ mid_pool = _attacking_section("MID", "Midfielders", "🎯")
 fwd_pool = _attacking_section("FWD", "Forwards", "⚡")
 
 
+POSITION_LIST = {"GKP": ("Goalkeepers", 10), "DEF": ("Defenders", 15), "MID": ("Midfielders", 15), "FWD": ("Forwards", 15)}
+
+
+def _lookup_reason(row):
+    """Why this player is or isn't in their position's list above, given the same filters and cutoffs."""
+    if pd.isna(row["opponents"]):
+        return "No fixture in this look-ahead window"
+    if row["status"] in ("i", "s", "u"):
+        return f"{STATUS_LABELS[row['status']]} — {row['news'] or 'no details'}"
+    if row["minutes"] < 180:
+        return f"Only {row['minutes']:.0f} mins played this season (needs 180+)"
+    if row["mins_per_game"] < 75:
+        return f"Averages {row['mins_per_game']:.0f} mins/game — rotation risk (needs 75+)"
+    label, n = POSITION_LIST[row["position"]]
+    if diffs_only and row["selected_by_percent"] > DIFF_THRESHOLD:
+        return f"Hidden by the differentials filter ({row['selected_by_percent']:.1f}% owned)"
+    pool = eligible[eligible["position"] == row["position"]]
+    if diffs_only:
+        pool = pool[pool["selected_by_percent"] <= DIFF_THRESHOLD]
+    ranked = pool.sort_values(["projected_pts_next_gw", "selected_by_percent"], ascending=[False, False])
+    rank = list(ranked["id"]).index(row["id"]) + 1
+    if rank <= n:
+        return f"In the {label} list (#{rank})"
+    return f"#{rank} of {len(ranked)} {label.lower()} by Next GW — list shows the top {n}"
+
+
+def _player_lookup_section():
+    st.divider()
+    nav.section("🔎 Look Up Any Player", "🔎 Look Up")
+    st.caption(
+        "Not in the lists above? Search any player to see the same Next GW / Proj Pts model and why they "
+        "were left out. For players who fail the minutes or availability filters, the points still assume "
+        "they start and play the full match, so treat them as a ceiling."
+    )
+    by_name = players.sort_values("web_name")
+    labels = {
+        int(pid): f"{name} ({team_short.get(team, '?')}, {pos}, £{price:.1f})"
+        for pid, name, team, pos, price in zip(
+            by_name["id"], by_name["web_name"], by_name["team"], by_name["position"], by_name["price"]
+        )
+    }
+    chosen = st.multiselect(
+        "Players", list(labels), format_func=lambda i: labels.get(i, ""), key="rec_lookup",
+        placeholder="Type a player's name",
+    )
+    if not chosen:
+        return
+    rows = players[players["id"].isin(chosen)].copy()
+    rows["next_gw_pts"] = rows.apply(lambda r: _project_points(r, next_gw_team_fixtures.get(r["team"], [])), axis=1)
+    rows["window_pts"] = rows.apply(lambda r: _project_points(r, team_fixtures.get(r["team"], [])), axis=1)
+    rows["reason"] = rows.apply(_lookup_reason, axis=1)
+    rows = rows.set_index("id").loc[chosen].reset_index()
+
+    columns = [
+        ("Player", "left"), ("Team", "left"), ("Pos", "left"), ("Fixtures", "left"), ("Price", "right"),
+        ("Owned %", "right"), ("Mins/Game", "right"), ("Next GW", "right"), ("Proj Pts", "right"),
+        ("Why not listed", "left"),
+    ]
+    header = "<tr>" + "".join(
+        f'<th style="text-align:{align}; padding:6px 8px; font-size:0.78rem; opacity:0.7; '
+        f'white-space:nowrap;">{label}</th>'
+        for label, align in columns
+    ) + "</tr>"
+    rows_html = []
+    for _, r in rows.iterrows():
+        listed = r["reason"].startswith("In the ")
+        reason_style = "opacity:0.75;" if listed else "color:#FFC107;"
+        rows_html.append(
+            '<tr style="border-top:1px solid rgba(128,128,128,0.15);">'
+            f'<td style="padding:6px 8px; font-weight:600; white-space:nowrap;">'
+            f'{html.escape(r["web_name"])}{_doubtful_badge(r)}</td>'
+            f'<td style="padding:6px 8px; white-space:nowrap;">{html.escape(r["team_short"])}</td>'
+            f'<td style="padding:6px 8px;">{r["position"]}</td>'
+            f'<td style="padding:6px 8px;">{_fixture_chips_html(r["team"])}</td>'
+            f'<td style="padding:6px 8px; text-align:right; white-space:nowrap;">£{r["price"]:.1f}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["selected_by_percent"]:.1f}%</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["mins_per_game"]:.0f}</td>'
+            f'<td style="padding:6px 8px; text-align:right; font-weight:700;">{r["next_gw_pts"]:.1f}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["window_pts"]:.1f}</td>'
+            f'<td style="padding:6px 8px; {reason_style}">{html.escape(r["reason"])}</td>'
+            "</tr>"
+        )
+    st.markdown(
+        '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+        f"<thead>{header}</thead><tbody>{''.join(rows_html)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    player_picker(rows["id"], rows["web_name"], key="rec_picker_lookup")
+
+
+_player_lookup_section()
+
+
 st.divider()
 nav.section("💰 Recommended 15 — Best Squad Within Budget", "💰 Recommended 15")
 
