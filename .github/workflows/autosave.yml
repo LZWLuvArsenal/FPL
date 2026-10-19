@@ -1,0 +1,39 @@
+name: Auto-save GW squad
+
+on:
+  schedule:
+    # Every 3 hours; the script only saves once the next deadline is within 24h (and only once per GW),
+    # so the squad lands roughly 21-24h before each deadline.
+    - cron: "40 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Shared with the daily snapshot so the two never push to main at the same time.
+  group: snapshot
+  cancel-in-progress: false
+
+jobs:
+  autosave:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas requests "pulp>=2.8,<4"
+      - run: python scripts/autosave_squad.py
+      - name: Commit squad
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898728+github-actions[bot]@users.noreply.github.com"
+          git add data/tracker
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Auto-save GW squad $(date -u +%Y-%m-%d)"
+            git pull --rebase
+            git push
+          fi

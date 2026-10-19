@@ -1,0 +1,145 @@
+{
+  "id": "b15886c7-014b-4760-9bbe-a03105d2aa77",
+  "saved_at": "2026-10-19T14:25:22.672655+00:00",
+  "start_gw": 7,
+  "budget": 100.0,
+  "total_cost": 99.69999999999999,
+  "source": "rebuilt",
+  "players": [
+    {
+      "id": 597,
+      "name": "Suzuki",
+      "team_short": "AVL",
+      "position": "GKP",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 1,
+      "name": "Raya",
+      "team_short": "ARS",
+      "position": "GKP",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 112,
+      "name": "Van Hecke",
+      "team_short": "TOT",
+      "position": "DEF",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 37,
+      "name": "Lindel\u00f6f",
+      "team_short": "AVL",
+      "position": "DEF",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 115,
+      "name": "De Cuyper",
+      "team_short": "BHA",
+      "position": "DEF",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 504,
+      "name": "Vuskovic",
+      "team_short": "BHA",
+      "position": "DEF",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 449,
+      "name": "Hall",
+      "team_short": "NEW",
+      "position": "DEF",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 124,
+      "name": "Gro\u00df",
+      "team_short": "BHA",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": true
+    },
+    {
+      "id": 427,
+      "name": "Mbeumo",
+      "team_short": "MUN",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 12,
+      "name": "Saka",
+      "team_short": "ARS",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 68,
+      "name": "Tavernier",
+      "team_short": "BOU",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 15,
+      "name": "\u00d8degaard",
+      "team_short": "ARS",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 411,
+      "name": "Haaland",
+      "team_short": "MCI",
+      "position": "FWD",
+      "is_starter": true,
+      "is_captain": true,
+      "is_vice": false
+    },
+    {
+      "id": 249,
+      "name": "Barry",
+      "team_short": "EVE",
+      "position": "FWD",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 346,
+      "name": "Calvert-Lewin",
+      "team_short": "LEE",
+      "position": "FWD",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    }
+  ]
+}

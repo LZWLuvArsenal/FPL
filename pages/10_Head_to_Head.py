@@ -9,6 +9,7 @@ import streamlit as st
 from src.config import render_sidebar_settings, style_chart
 from src.fpl_api import get_bootstrap_static, get_element_summary, get_fixtures
 from src.player_dialog import player_dataframe
+from src.parallel import parallel_map
 from src.section_nav import SectionNav
 from src.team_model import project_match, team_rates, venue_factors
 from src.understat import (
@@ -125,6 +126,7 @@ nav.section("This season", "📅 This Season")
 
 rows = []
 with st.spinner(f"Checking {len(squad)} players' history against their GW{gw} opponent..."):
+    parallel_map(get_element_summary, [int(i) for i in squad["id"]])
     for _, p in squad.iterrows():
         opponent_id = away_id if p["team"] == home_id else home_id
         summary = get_element_summary(int(p["id"]))
@@ -179,6 +181,7 @@ if st.checkbox("Load all-time head-to-head record", value=False):
     season_list = seasons_since_earliest(current_season())
     team_matches = []
     with st.spinner(f"Checking {len(season_list)} seasons of {home_understat} vs {away_understat}..."):
+        parallel_map(get_league_fixtures, season_list)
         for s in season_list:
             try:
                 season_fixtures = get_league_fixtures(s)
@@ -348,7 +351,14 @@ if st.checkbox("Load all-time head-to-head record", value=False):
     st.markdown("#### Player Records (All-Time)")
     hist_rows = []
     unmatched = []
+    def _prefetch_understat(p):
+        own_team_understat = home_understat if p["team"] == home_id else away_understat
+        understat_id = find_player_id(p["full_name"], own_team_understat, web_name=p["web_name"])
+        if understat_id:
+            get_player_matches(understat_id)
+
     with st.spinner(f"Fetching all-time Understat history for {len(squad)} players..."):
+        parallel_map(_prefetch_understat, [p for _, p in squad.iterrows()])
         for _, p in squad.iterrows():
             own_team_understat = home_understat if p["team"] == home_id else away_understat
             opponent_name = away_understat if p["team"] == home_id else home_understat

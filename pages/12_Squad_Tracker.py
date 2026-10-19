@@ -35,12 +35,22 @@ def get_live(gw: int) -> dict:
     return live_cache[gw]
 
 
-for snap in sorted(snapshots, key=lambda s: s["saved_at"], reverse=True):
+for snap in sorted(snapshots, key=lambda s: (s["start_gw"], s["saved_at"]), reverse=True):
     start_gw = snap["start_gw"]
     tracked_gws = sorted(gw for gw in finished_events if gw >= start_gw)
     saved_date = snap["saved_at"][:10]
 
-    with st.expander(f"GW{start_gw} squad — saved {saved_date} (£{snap['total_cost']:.1f}m)", expanded=True):
+    source_label = {"auto": " · auto-saved", "rebuilt": " · rebuilt after the deadline"}.get(snap.get("source"), "")
+
+    with st.expander(
+        f"GW{start_gw} squad — saved {saved_date} (£{snap['total_cost']:.1f}m){source_label}", expanded=True
+    ):
+        if snap.get("source") == "rebuilt":
+            st.caption(
+                "Reconstructed after the deadline from archived pre-deadline data (stats from earlier "
+                "gameweeks, prices and injury flags from the last snapshot before the deadline), so it "
+                "may differ slightly from what the page would have recommended at the time."
+            )
         if not tracked_gws:
             st.caption(f"GW{start_gw} hasn't finished yet — check back after it does.")
         else:
