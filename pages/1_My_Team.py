@@ -46,10 +46,14 @@ players = players_df(bootstrap)
 
 st.subheader(f"{entry['name']} — {entry['player_first_name']} {entry['player_last_name']}")
 
-rank_history = sorted(history["current"], key=lambda h: h["event"])
+# Compare the live overall rank (entry summary) against the rank at the end of the
+# previous GW. During a live GW the history endpoint's row for the current GW lags
+# behind the entry summary, so it can't be used for "now".
+prev_gw_rows = [h for h in history["current"] if h["event"] < entry["current_event"]]
 rank_delta = None
-if len(rank_history) >= 2:
-    rank_delta = rank_history[-2]["overall_rank"] - rank_history[-1]["overall_rank"]
+if prev_gw_rows and entry.get("summary_overall_rank"):
+    prev_rank = max(prev_gw_rows, key=lambda h: h["event"])["overall_rank"]
+    rank_delta = prev_rank - entry["summary_overall_rank"]
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Overall Points", entry["summary_overall_points"])
@@ -64,24 +68,41 @@ col4.metric("Team Value", f"£{entry['last_deadline_value'] / 10:.1f}m")
 
 this_event = next((e for e in bootstrap["events"] if e["id"] == entry["current_event"]), None)
 if this_event and this_event.get("average_entry_score") is not None:
-    my_points = entry["summary_event_points"]
+    # Rate the week by GW rank percentile rather than points vs average: while a GW is
+    # live, FPL's published average is a stale partial figure, but the GW rank is live
+    # and is what actually drives overall rank movement.
+    gw_live = not this_event.get("data_checked")
+    event_rank = entry.get("summary_event_rank")
+    total_players = bootstrap.get("total_players")
     avg_points = this_event["average_entry_score"]
-    diff = my_points - avg_points
-    if diff >= 20:
-        rating = "🔥 Elite"
-    elif diff >= 10:
-        rating = "💪 Great"
-    elif diff >= 0:
-        rating = "🙂 Above Average"
-    elif diff >= -10:
-        rating = "😐 Below Average"
-    else:
-        rating = "😬 Rough Week"
+    diff = entry["summary_event_points"] - avg_points
 
-    nav.section(f"How Did GW{this_event['id']} Go?", "📊 GW Review")
+    if event_rank and total_players:
+        pct = event_rank / total_players * 100
+        if pct <= 5:
+            rating = "🔥 Elite"
+        elif pct <= 20:
+            rating = "💪 Great"
+        elif pct <= 50:
+            rating = "🙂 Above Average"
+        elif pct <= 75:
+            rating = "😐 Below Average"
+        else:
+            rating = "😬 Rough Week"
+        rating_delta = f"Top {pct:.0f}%" if pct <= 50 else f"Bottom {100 - pct:.0f}%"
+        rating_color = "normal" if pct <= 50 else "inverse"
+    else:
+        rating = "🙂 Above Average" if diff >= 0 else "😐 Below Average"
+        rating_delta = f"{diff:+d} vs average"
+        rating_color = "normal"
+
+    title = f"How Is GW{this_event['id']} Going?" if gw_live else f"How Did GW{this_event['id']} Go?"
+    nav.section(title, "📊 GW Review")
+    if gw_live:
+        st.caption("GW still in progress — rating uses your live GW rank. FPL's average is provisional until the GW is finalised.")
     rcol1, rcol2, rcol3 = st.columns(3)
-    rcol1.metric("Gameweek Rating", rating, f"{diff:+d} vs average")
-    rcol2.metric("Average Score (All Managers)", avg_points)
+    rcol1.metric("Gameweek Rating", rating, rating_delta, delta_color=rating_color, delta_arrow="off")
+    rcol2.metric("Average Score (All Managers)" + (" — provisional" if gw_live else ""), avg_points)
     rcol3.metric("Highest Score This GW", this_event["highest_score"])
 
 CHIP_NAMES = {"bboost": "Bench Boost", "freehit": "Free Hit", "wildcard": "Wildcard", "3xc": "Triple Captain"}
