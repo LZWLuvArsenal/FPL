@@ -36,6 +36,21 @@ TEAM_NAME_ALIASES = {
 }
 
 
+class UnderstatUnavailable(requests.RequestException):
+    """Understat answered, but not with data — e.g. its "We will come back soon" maintenance page,
+    which it serves with HTTP 200 on every URL."""
+
+
+def _json(resp: requests.Response):
+    resp.raise_for_status()
+    try:
+        return resp.json()
+    except ValueError:
+        raise UnderstatUnavailable(
+            "understat.com returned a web page instead of data — the site is probably down for maintenance."
+        ) from None
+
+
 def understat_team_name(fpl_name: str) -> str:
     return TEAM_NAME_ALIASES.get(fpl_name.strip().lower(), fpl_name)
 
@@ -44,8 +59,7 @@ def understat_team_name(fpl_name: str) -> str:
 def search_players(query: str) -> list[dict]:
     """Name search understat's own site uses for autocomplete. Returns [{id, player, team}, ...]."""
     resp = _session.get(f"{BASE_URL}/main/getPlayersName/{quote(query)}", timeout=15)
-    resp.raise_for_status()
-    data = resp.json().get("response", {})
+    data = _json(resp).get("response", {})
     return data.get("players", []) if data.get("success") else []
 
 
@@ -53,8 +67,7 @@ def search_players(query: str) -> list[dict]:
 def get_player_matches(understat_id: str) -> list[dict]:
     """Full match-by-match history for a player, across every season Understat has for them."""
     resp = _session.post(f"{BASE_URL}/main/getPlayerMatches/{understat_id}", timeout=15)
-    resp.raise_for_status()
-    data = resp.json().get("response", {})
+    data = _json(resp).get("response", {})
     return data.get("matches", []) if data.get("success") else []
 
 
@@ -135,8 +148,7 @@ def current_season(league: str = "EPL") -> str:
 def get_league_team_data(season: str, league: str = "EPL") -> dict:
     """Per-team, match-by-match season data: xG, xGA, PPDA, deep completions, xPTS, etc."""
     resp = _session.get(f"{BASE_URL}/getLeagueData/{league}/{season}", timeout=15)
-    resp.raise_for_status()
-    return resp.json()["teams"]
+    return _json(resp)["teams"]
 
 
 EARLIEST_SEASON = 2014
@@ -152,8 +164,7 @@ def get_league_fixtures(season: str, league: str = "EPL") -> list[dict]:
     get_league_team_data only has aggregate match stats (xG, PPDA, ...), no opponent name, so
     head-to-head lookups need this instead."""
     resp = _session.get(f"{BASE_URL}/getLeagueData/{league}/{season}", timeout=15)
-    resp.raise_for_status()
-    return resp.json()["dates"]
+    return _json(resp)["dates"]
 
 
 def team_h2h_matches(fixtures: list[dict], team_a: str, team_b: str) -> list[dict]:

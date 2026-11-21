@@ -177,8 +177,17 @@ if st.checkbox("Load all-time head-to-head record", value=False):
         home_understat = col1.text_input(f"Name for {team_short[home_id]}", value=home_understat)
         away_understat = col2.text_input(f"Name for {team_short[away_id]}", value=away_understat)
 
+    # Probe once up front: the loops below skip individual failures, which would otherwise turn a
+    # site-wide outage into a misleading "no meetings" / "61 players not matched".
+    try:
+        latest_season = current_season()
+        get_league_fixtures(latest_season)
+    except requests.RequestException as exc:
+        st.error(f"Couldn't load data from understat.com right now: {exc} Try again later.")
+        st.stop()
+
     st.markdown("#### Team Record (All-Time)")
-    season_list = seasons_since_earliest(current_season())
+    season_list = seasons_since_earliest(latest_season)
     team_matches = []
     with st.spinner(f"Checking {len(season_list)} seasons of {home_understat} vs {away_understat}..."):
         parallel_map(get_league_fixtures, season_list)
