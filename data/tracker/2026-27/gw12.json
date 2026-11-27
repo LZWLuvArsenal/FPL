@@ -1,0 +1,145 @@
+{
+  "id": "64132250-05ed-4044-8ee5-5374345bd2ee",
+  "saved_at": "2026-11-27T01:54:34.814125+00:00",
+  "start_gw": 12,
+  "budget": 100.0,
+  "total_cost": 87.5,
+  "source": "auto",
+  "players": [
+    {
+      "id": 385,
+      "name": "Trafford",
+      "team_short": "LEE",
+      "position": "GKP",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 496,
+      "name": "Kinsky",
+      "team_short": "TOT",
+      "position": "GKP",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 334,
+      "name": "Muharemovi\u0107",
+      "team_short": "LEE",
+      "position": "DEF",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 332,
+      "name": "Justin",
+      "team_short": "LEE",
+      "position": "DEF",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 112,
+      "name": "Van Hecke",
+      "team_short": "TOT",
+      "position": "DEF",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": true
+    },
+    {
+      "id": 60,
+      "name": "Hill",
+      "team_short": "BOU",
+      "position": "DEF",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 566,
+      "name": "Silva",
+      "team_short": "BOU",
+      "position": "DEF",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 86,
+      "name": "Lewis-Potter",
+      "team_short": "BRE",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 366,
+      "name": "Wirtz",
+      "team_short": "LIV",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 591,
+      "name": "Enciso",
+      "team_short": "IPS",
+      "position": "MID",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 124,
+      "name": "Gro\u00df",
+      "team_short": "BHA",
+      "position": "MID",
+      "is_starter": false,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 68,
+      "name": "Tavernier",
+      "team_short": "BOU",
+      "position": "MID",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 295,
+      "name": "McBurnie",
+      "team_short": "HUL",
+      "position": "FWD",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    },
+    {
+      "id": 379,
+      "name": "Isak",
+      "team_short": "LIV",
+      "position": "FWD",
+      "is_starter": true,
+      "is_captain": true,
+      "is_vice": false
+    },
+    {
+      "id": 249,
+      "name": "Barry",
+      "team_short": "EVE",
+      "position": "FWD",
+      "is_starter": true,
+      "is_captain": false,
+      "is_vice": false
+    }
+  ]
+}
